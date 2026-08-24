@@ -1,0 +1,46 @@
+# === 敏感信息红线：绝不入库 ===
+.env
+.env.*
+*.env
+secrets/
+*_api_key*
+
+# === Python ===
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# === Node / 前端 ===
+node_modules/
+.npm/
+.vite/
+app/frontend/dist/
+
+# === Rust / Tauri ===
+target/
+
+# === 数据与运行时 ===
+*.db
+*.sqlite*
+data/
+logs/
+*.log
+
+# === 大文件（音频测试集 >5MB 走 LFS 或不入库）===
+*.wav
+*.mp3
+*.m4a
+*.opus
+
+# === 编辑器/系统 ===
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
