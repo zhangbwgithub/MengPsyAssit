@@ -1,0 +1,15 @@
+{
+  "output": {
+    "audio": {
+      "data": "",
+      "expires_at": 1787739421,
+      "id": "audio_5016aa1c-04fe-98fe-8298-19c2a0c2c778",
+      "url": "http://dashscope-result-bj.oss-cn-beijing.aliyuncs.com/prod/qwen3-tts/20260825/1203928759810773/5016aa1c-04fe-98fe-8298-19c2a0c2c778.wav?Expires=1787739421&OSSAccessKeyId=LTAI5tGzqbGcEmE58b221XQy&Signature=whkT2pCgIKib614tq0L8s2MdHEM%3D"
+    },
+    "finish_reason": "stop"
+  },
+  "usage": {
+    "characters": 14
+  },
+  "request_id": "5016aa1c-04fe-98fe-8298-19c2a0c2c778"
+}

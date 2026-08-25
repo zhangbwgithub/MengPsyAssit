@@ -1,0 +1,72 @@
+{
+  "scenario": "02_overlap_interruption",
+  "description": "打断重叠：多处双说话人同时发声，压测说话人分离",
+  "audio": "tests/audio/02_overlap_interruption.wav",
+  "sample_rate": 16000,
+  "channels": 1,
+  "duration": 18.7,
+  "voices": {
+    "T": "Ethan (qwen3-tts-flash)",
+    "P": "Cherry (qwen3-tts-flash)"
+  },
+  "note": "start/end 为拼接时间线的计划值（TTS 片段可能含极少量首尾静音，边界为约值）",
+  "turns": [
+    {
+      "idx": 0,
+      "speaker": "T",
+      "role": "counselor",
+      "text": "那我们就从你上次提到的那件事开始聊吧。",
+      "start": 0.0,
+      "end": 2.8
+    },
+    {
+      "idx": 1,
+      "speaker": "P",
+      "role": "client",
+      "text": "嗯，就是上周和我妈打电话那件事，其实我当时特别委屈，然后她就一直在讲道理。",
+      "start": 3.4,
+      "end": 10.6
+    },
+    {
+      "idx": 2,
+      "speaker": "T",
+      "role": "counselor",
+      "text": "嗯。",
+      "start": 9.1,
+      "end": 9.5
+    },
+    {
+      "idx": 3,
+      "speaker": "P",
+      "role": "client",
+      "text": "她每讲一句道理，我就觉得更堵得慌。",
+      "start": 9.0,
+      "end": 12.2
+    },
+    {
+      "idx": 4,
+      "speaker": "T",
+      "role": "counselor",
+      "text": "她讲道理的时候，你的感受是……",
+      "start": 11.2,
+      "end": 13.92
+    },
+    {
+      "idx": 5,
+      "speaker": "P",
+      "role": "client",
+      "text": "就觉得很堵，不想再听了。",
+      "start": 13.12,
+      "end": 15.28
+    },
+    {
+      "idx": 6,
+      "speaker": "T",
+      "role": "counselor",
+      "text": "好，我们慢一点，一句一句来。",
+      "start": 16.08,
+      "end": 18.4
+    }
+  ],
+  "transcript": "T: 那我们就从你上次提到的那件事开始聊吧。\nP: 嗯，就是上周和我妈打电话那件事，其实我当时特别委屈，然后她就一直在讲道理。\nT: 嗯。\nP: 她每讲一句道理，我就觉得更堵得慌。\nT: 她讲道理的时候，你的感受是……\nP: 就觉得很堵，不想再听了。\nT: 好，我们慢一点，一句一句来。"
+}
