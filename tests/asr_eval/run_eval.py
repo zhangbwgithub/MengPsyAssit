@@ -38,6 +38,13 @@ _MODELS = {
         "supports_diarization": False,
         "supports_timestamps": False,
     },
+    "qwen3-asr-filetrans": {
+        "name": "qwen3-asr-flash-filetrans",
+        "provider": "qwen_asr_filetrans",
+        "needs_url": True,
+        "supports_diarization": False,
+        "supports_timestamps": True,
+    },
 }
 
 
@@ -49,11 +56,11 @@ _MODELS = {
 def parse_args() -> argparse.Namespace:
     """解析命令行参数。"""
     parser = argparse.ArgumentParser(
-        description="ASR 选型评测脚本：比较 paraformer-v2 与 qwen3-asr-flash"
+        description="ASR 选型评测脚本：比较 paraformer-v2、qwen3-asr-flash、qwen3-asr-flash-filetrans"
     )
     parser.add_argument(
         "--model",
-        choices=["paraformer", "qwen3-asr", "all"],
+        choices=["paraformer", "qwen3-asr", "qwen3-asr-filetrans", "all"],
         default="all",
         help="选择评测的模型 (默认: all)",
     )
@@ -280,8 +287,6 @@ def print_dry_run_plan(
         golden = load_golden(af)
         duration = golden.get("duration", "未知") if golden else "未知"
         print(f"  • {af.name} ({duration}s, {size_kb:.0f} KB)")
-        if mid == "paraformer":
-            print("    ⚠ paraformer-v2 需要公网可访问 URL，不支持本地文件路径")
     print()
 
     # 执行矩阵
@@ -289,7 +294,11 @@ def print_dry_run_plan(
     for mid in models_to_eval:
         for af in audio_files:
             total_requests += 1
-            marker = "⚠ 需URL" if _MODELS[mid]["needs_url"] else "✓ 可直接调用"
+            minfo = _MODELS[mid]
+            if minfo["needs_url"]:
+                marker = "⚠ 需OSS URL（本地文件将自动上传）"
+            else:
+                marker = "✓ 可直接调用"
             print(f"  [{mid}] × [{af.name}] → {marker}")
     print()
 
@@ -297,6 +306,7 @@ def print_dry_run_plan(
     print("调用参数：")
     print("  • paraformer-v2: diarization_enabled=True, speaker_count=2, language_hints=['zh','en']")
     print("  • qwen3-asr-flash: result_format='message'")
+    print("  • qwen3-asr-flash-filetrans: language='zh', 异步任务+轮询")
     print()
 
     # 输出
@@ -328,12 +338,13 @@ def print_dry_run_plan(
 
 def run_paraformer(audio_path: Path) -> dict:
     """运行 paraformer-v2 评测。"""
+    from providers import upload_to_dashscope_oss
     from providers.paraformer import transcribe
 
-    # paraformer 需要 URL，这里我们传入本地路径作为占位
-    # 执行时编排方会提供托管方案
-    file_url = str(audio_path.resolve())
-    return transcribe(file_url)
+    # paraformer 需要公网可访问 URL；本地文件先上传到 DashScope OSS
+    file_url = upload_to_dashscope_oss(str(audio_path.resolve()))
+    # SDK 对 oss:// URL 解析不稳定，强制使用已验证的 HTTP 路径
+    return transcribe(file_url, use_sdk=False)
 
 
 def run_qwen_asr(audio_path: Path) -> dict:
@@ -341,6 +352,17 @@ def run_qwen_asr(audio_path: Path) -> dict:
     from providers.qwen_asr import transcribe
 
     return transcribe(str(audio_path.resolve()))
+
+
+def run_qwen_asr_filetrans(audio_path: Path) -> dict:
+    """运行 qwen3-asr-flash-filetrans 评测。"""
+    from providers import upload_to_dashscope_oss
+    from providers.qwen_asr_filetrans import transcribe
+
+    # filetrans 需要 DashScope OSS URL；本地文件先上传
+    file_url = upload_to_dashscope_oss(str(audio_path.resolve()))
+    # SDK 对 oss:// URL 解析不稳定，强制使用已验证的 HTTP 路径
+    return transcribe(file_url, use_sdk=False)
 
 
 def run_evaluation(
@@ -362,19 +384,23 @@ def run_evaluation(
 
             if mid == "paraformer":
                 result = run_paraformer(audio_path)
-            else:
+            elif mid == "qwen3-asr":
                 result = run_qwen_asr(audio_path)
+            else:
+                result = run_qwen_asr_filetrans(audio_path)
 
             # 计算 CER
             golden = load_golden(audio_path)
             if golden and result.full_text:
                 result.cer = compute_cer_from_golden(result.full_text, golden)
 
-            # 说话人分离评估（仅 paraformer）
+            # 说话人分离评估
             if minfo["supports_diarization"] and result.sentences and golden:
                 result.speaker_stats = evaluate_speaker_diarization(
                     result.sentences, golden
                 )
+            elif not minfo["supports_diarization"]:
+                result.speaker_stats = {"supported": False}
 
             results.append(result.to_dict())
 

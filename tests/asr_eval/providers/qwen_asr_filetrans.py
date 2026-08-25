@@ -1,10 +1,13 @@
-"""候选 1：paraformer-v2 录音文件识别（异步任务，支持说话人分离）。
+"""候选 3：qwen3-asr-flash-filetrans（长音频文件转写，异步任务）。
 
 两种实现路径：
 - SDK 路径：dashscope.audio.asr.Transcription
 - HTTP 路径：urllib.request 直接调 REST API
 
-关键约束：file_urls 必须是公网可访问 URL，不支持本地文件。
+关键特征：
+- 支持长音频（项目需求：180 分钟录音）
+- 支持句级时间戳，不支持说话人分离
+- 输入必须是 DashScope OSS URL（本地文件需先上传）
 """
 
 from __future__ import annotations
@@ -18,7 +21,7 @@ from typing import Any
 from . import ASRResult, get_api_key, timed_call
 
 # ── 模型常量 ────────────────────────────────────────────────────
-MODEL_NAME = "paraformer-v2"
+MODEL_NAME = "qwen3-asr-flash-filetrans"
 _API_BASE = "https://dashscope.aliyuncs.com/api/v1"
 
 
@@ -31,28 +34,22 @@ def _run_via_sdk(
     file_url: str,
     api_key: str,
     *,
-    language_hints: list[str] | None = None,
-    speaker_count: int = 2,
+    language: str = "zh",
     poll_interval: float = 3.0,
-    max_wait: float = 300.0,
+    max_wait: float = 600.0,
 ) -> ASRResult:
-    """通过 dashscope SDK 调用 paraformer-v2 录音文件识别。"""
+    """通过 dashscope SDK 调用 qwen3-asr-flash-filetrans。"""
     from dashscope.audio.asr import Transcription
-
-    if language_hints is None:
-        language_hints = ["zh", "en"]
 
     result = ASRResult(model=MODEL_NAME, audio=file_url)
 
     try:
-        # 异步提交
+        # 异步提交（SDK 参数仍使用 file_urls 数组）
         resp, latency = timed_call(
             Transcription.async_call,
             model=MODEL_NAME,
             file_urls=[file_url],
-            language_hints=language_hints,
-            diarization_enabled=True,
-            speaker_count=speaker_count,
+            language=language,
         )
 
         # 轮询等待
@@ -86,32 +83,6 @@ def _run_via_sdk(
     return result
 
 
-def _fetch_transcription_results(
-    task_result: Any, result: ASRResult, file_url: str
-) -> ASRResult:
-    """从 SDK 返回的任务结果中提取并解析转写内容。"""
-    import urllib.request
-
-    output = task_result.output
-    results_list = output.get("results", [])
-
-    for item in results_list:
-        if item.get("transcription_url"):
-            try:
-                req = urllib.request.Request(item["transcription_url"])
-                with urllib.request.urlopen(req, timeout=30) as resp:
-                    transcript_json = json.loads(resp.read().decode("utf-8"))
-                result = _parse_paraformer_transcript(transcript_json, result)
-            except Exception as exc:
-                result.status = "error"
-                result.error = f"下载转写结果失败: {exc}"
-        elif "transcripts" in item:
-            # 有时结果直接嵌入
-            result = _parse_paraformer_transcript(item, result)
-
-    return result
-
-
 # ═══════════════════════════════════════════════════════════════
 # HTTP 路径（纯标准库）
 # ═══════════════════════════════════════════════════════════════
@@ -121,27 +92,19 @@ def _run_via_http(
     file_url: str,
     api_key: str,
     *,
-    language_hints: list[str] | None = None,
-    speaker_count: int = 2,
+    language: str = "zh",
     poll_interval: float = 3.0,
-    max_wait: float = 300.0,
+    max_wait: float = 600.0,
 ) -> ASRResult:
-    """通过 urllib.request 调用 paraformer-v2 HTTP API。"""
-    if language_hints is None:
-        language_hints = ["zh", "en"]
-
+    """通过 urllib.request 调用 qwen3-asr-flash-filetrans HTTP API。"""
     result = ASRResult(model=MODEL_NAME, audio=file_url)
 
-    # 提交异步任务
+    # 提交异步任务；注意 input 字段是 file_url（单数）
     submit_body = json.dumps(
         {
             "model": MODEL_NAME,
-            "input": {"file_urls": [file_url]},
-            "parameters": {
-                "diarization_enabled": True,
-                "speaker_count": speaker_count,
-                "language_hints": language_hints,
-            },
+            "input": {"file_url": file_url},
+            "parameters": {"language": language},
         }
     ).encode("utf-8")
 
@@ -152,7 +115,7 @@ def _run_via_http(
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
             "X-DashScope-Async": "enable",
-            # 当传入 DashScope OSS URL 时需要服务端解析
+            # OSS URL 需要服务端解析
             "X-DashScope-OssResourceResolve": "enable",
         },
         method="POST",
@@ -219,19 +182,33 @@ def _run_via_http(
         return result
 
     # 解析转写结果
-    results_list = poll_resp.get("output", {}).get("results", [])
-    for item in results_list:
-        if item.get("transcription_url"):
-            try:
-                req = urllib.request.Request(item["transcription_url"])
-                with urllib.request.urlopen(req, timeout=30) as resp:
-                    transcript_json = json.loads(resp.read().decode("utf-8"))
-                result = _parse_paraformer_transcript(transcript_json, result)
-            except Exception as exc:
-                result.status = "error"
-                result.error = f"下载转写结果失败: {exc}"
-        elif "transcripts" in item:
-            result = _parse_paraformer_transcript(item, result)
+    # qwen3-asr-flash-filetrans 的结果位于 output.result.transcription_url
+    output = poll_resp.get("output", {})
+    transcription_url = output.get("result", {}).get("transcription_url")
+    if transcription_url:
+        try:
+            req = urllib.request.Request(transcription_url)
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                transcript_json = json.loads(resp.read().decode("utf-8"))
+            result = _parse_filetrans_transcript(transcript_json, result)
+        except Exception as exc:
+            result.status = "error"
+            result.error = f"下载转写结果失败: {exc}"
+    else:
+        # 兼容可能的多 results 结构
+        results_list = output.get("results", [])
+        for item in results_list:
+            if item.get("transcription_url"):
+                try:
+                    req = urllib.request.Request(item["transcription_url"])
+                    with urllib.request.urlopen(req, timeout=30) as resp:
+                        transcript_json = json.loads(resp.read().decode("utf-8"))
+                    result = _parse_filetrans_transcript(transcript_json, result)
+                except Exception as exc:
+                    result.status = "error"
+                    result.error = f"下载转写结果失败: {exc}"
+            elif "transcripts" in item:
+                result = _parse_filetrans_transcript(item, result)
 
     return result
 
@@ -241,13 +218,49 @@ def _run_via_http(
 # ═══════════════════════════════════════════════════════════════
 
 
-def _parse_paraformer_transcript(
+def _fetch_transcription_results(
+    task_result: Any, result: ASRResult, file_url: str
+) -> ASRResult:
+    """从 SDK 返回的任务结果中提取并解析转写内容。"""
+    output = task_result.output
+    transcription_url = output.get("result", {}).get("transcription_url")
+    if transcription_url:
+        try:
+            req = urllib.request.Request(transcription_url)
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                transcript_json = json.loads(resp.read().decode("utf-8"))
+            result = _parse_filetrans_transcript(transcript_json, result)
+        except Exception as exc:
+            result.status = "error"
+            result.error = f"下载转写结果失败: {exc}"
+        return result
+
+    # 兼容可能的多 results 结构
+    results_list = output.get("results", [])
+    for item in results_list:
+        if item.get("transcription_url"):
+            try:
+                req = urllib.request.Request(item["transcription_url"])
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    transcript_json = json.loads(resp.read().decode("utf-8"))
+                result = _parse_filetrans_transcript(transcript_json, result)
+            except Exception as exc:
+                result.status = "error"
+                result.error = f"下载转写结果失败: {exc}"
+        elif "transcripts" in item:
+            result = _parse_filetrans_transcript(item, result)
+
+    return result
+
+
+def _parse_filetrans_transcript(
     transcript_data: dict[str, Any], result: ASRResult
 ) -> ASRResult:
-    """解析 paraformer-v2 的 transcription JSON。
+    """解析 qwen3-asr-flash-filetrans 的 transcription JSON。
 
     预期结构：
-    {"transcripts": [{"sentences": [{"text": ..., "begin_time": ms, "end_time": ms, "speaker_id": int}, ...]}]}
+    {"transcripts": [{"sentences": [{"text": ..., "begin_time": ms, "end_time": ms}, ...]}]}
+    注意：该模型不支持说话人分离，因此 sentences 中无 speaker_id。
     """
     transcripts = transcript_data.get("transcripts", [])
     all_sentences: list[dict[str, Any]] = []
@@ -262,7 +275,8 @@ def _parse_paraformer_transcript(
                     "text": text,
                     "begin_ms": sent.get("begin_time"),
                     "end_ms": sent.get("end_time"),
-                    "speaker_id": sent.get("speaker_id"),
+                    # 官方模型页明确：不支持说话人分离
+                    "speaker_id": None,
                 }
             )
 
@@ -279,18 +293,16 @@ def _parse_paraformer_transcript(
 def transcribe(
     file_url: str,
     *,
-    language_hints: list[str] | None = None,
-    speaker_count: int = 2,
+    language: str = "zh",
     poll_interval: float = 3.0,
-    max_wait: float = 300.0,
+    max_wait: float = 600.0,
     use_sdk: bool | None = None,
 ) -> ASRResult:
-    """调用 paraformer-v2 转写音频。
+    """调用 qwen3-asr-flash-filetrans 转写音频。
 
     Args:
-        file_url: 公网可访问的音频 URL
-        language_hints: 语言提示，默认 ['zh', 'en']
-        speaker_count: 说话人数量
+        file_url: DashScope OSS URL（本地文件需先通过 dashscope oss.upload 上传）
+        language: 语言代码，默认 'zh'
         poll_interval: 轮询间隔秒数
         max_wait: 最大等待秒数
         use_sdk: None=自动检测, True=强制SDK, False=强制HTTP
@@ -309,8 +321,7 @@ def transcribe(
         return _run_via_sdk(
             file_url,
             api_key,
-            language_hints=language_hints,
-            speaker_count=speaker_count,
+            language=language,
             poll_interval=poll_interval,
             max_wait=max_wait,
         )
@@ -318,8 +329,7 @@ def transcribe(
         return _run_via_http(
             file_url,
             api_key,
-            language_hints=language_hints,
-            speaker_count=speaker_count,
+            language=language,
             poll_interval=poll_interval,
             max_wait=max_wait,
         )

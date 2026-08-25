@@ -2,9 +2,10 @@
 
 ## 概述
 
-本目录包含 ASR（自动语音识别）选型评测脚本，用于比较两个 DashScope ASR 候选模型：
+本目录包含 ASR（自动语音识别）选型评测脚本，用于比较三个 DashScope ASR 候选模型：
 - **paraformer-v2**：录音文件识别，异步任务，支持说话人分离
 - **qwen3-asr-flash**：同步多模态 chat 风格，返回纯文本
+- **qwen3-asr-flash-filetrans**：长音频文件转写，异步任务，支持句级时间戳，不支持说话人分离
 
 评测指标：字错率（CER）、说话人分离准确率（仅 paraformer）、API 延迟。
 
@@ -17,7 +18,8 @@ tests/asr_eval/
 ├── providers/
 │   ├── __init__.py      # 统一结果格式与工具函数
 │   ├── paraformer.py    # 候选 1：paraformer-v2
-│   └── qwen_asr.py      # 候选 2：qwen3-asr-flash
+│   ├── qwen_asr.py      # 候选 2：qwen3-asr-flash
+│   └── qwen_asr_filetrans.py  # 候选 3：qwen3-asr-flash-filetrans
 └── README.md            # 本文件
 ```
 
@@ -38,6 +40,7 @@ python3 tests/asr_eval/run_eval.py
 # 只评测某个模型
 python3 tests/asr_eval/run_eval.py --model paraformer
 python3 tests/asr_eval/run_eval.py --model qwen3-asr
+python3 tests/asr_eval/run_eval.py --model qwen3-asr-filetrans
 
 # 指定音频文件
 python3 tests/asr_eval/run_eval.py --audio tests/audio/01_normal_dialogue.wav
@@ -54,6 +57,7 @@ python3 tests/asr_eval/run_eval.py --dry-run
 结果保存在 `tests/asr_eval/results/`（默认）：
 - `paraformer_results.json`
 - `qwen3-asr_results.json`
+- `qwen3-asr-filetrans_results.json`
 
 每条记录包含：
 ```json
@@ -85,16 +89,16 @@ python3 tests/asr_eval/run_eval.py --dry-run
 
 ## 候选模型能力差异
 
-| 特性 | paraformer-v2 | qwen3-asr-flash |
-|------|---------------|-----------------|
-| 调用方式 | 异步任务（提交→轮询→获取结果） | 同步调用（直接返回） |
-| 输入格式 | 公网可访问 URL（不支持本地文件） | 本地文件绝对路径 / URL / base64 |
-| 说话人分离 | ✅ 支持（speaker_id） | ❌ 不支持 |
-| 句级时间戳 | ✅ 支持（begin_time/end_time，毫秒） | ❌ 不支持 |
-| 返回格式 | 结构化 JSON（每句独立） | 纯文本 |
-| 语言提示 | 支持（language_hints 参数） | 不支持 |
-| 限流策略 | 未知（需测试） | 100 RPM |
-| 适用场景 | 需要时间戳和说话人分离的场景 | 快速转写，无需细粒度信息 |
+| 特性 | paraformer-v2 | qwen3-asr-flash | qwen3-asr-flash-filetrans |
+|------|---------------|-----------------|---------------------------|
+| 调用方式 | 异步任务（提交→轮询→获取结果） | 同步调用（直接返回） | 异步任务（提交→轮询→获取结果） |
+| 输入格式 | DashScope OSS URL（本地文件自动上传） | 本地文件绝对路径 / URL / base64 | DashScope OSS URL（本地文件自动上传） |
+| 说话人分离 | ✅ 支持（speaker_id） | ❌ 不支持 | ❌ 不支持 |
+| 句级时间戳 | ✅ 支持（begin_time/end_time，毫秒） | ❌ 不支持 | ✅ 支持（begin_time/end_time，毫秒） |
+| 返回格式 | 结构化 JSON（每句独立） | 纯文本 | 结构化 JSON（每句独立） |
+| 语言提示 | 支持（language_hints 参数） | 不支持 | 支持（language 参数） |
+| 限流策略 | 未知（需测试） | 100 RPM | 未知（需测试） |
+| 适用场景 | 需要时间戳和说话人分离的场景 | 快速转写，无需细粒度信息 | 长音频转写（支持 180 分钟），需要句级时间戳但无需说话人分离 |
 
 ## 依赖
 
@@ -147,7 +151,7 @@ pip install dashscope
 
 ## 注意事项
 
-1. **paraformer-v2 需要公网 URL**：脚本接受本地路径，但实际执行时需要编排方提供音频托管方案
+1. **paraformer-v2 与 qwen3-asr-flash-filetrans 需要 DashScope OSS URL**：脚本已支持本地文件自动上传（通过 `.venv/bin/dashscope oss.upload`）
 2. **黄金基准的 start/end 是约值**：有 ±0.5s 左右的误差，用于说话人匹配时会容差处理
 3. **qwen3-asr-flash 无时间戳和说话人信息**：CER 只能基于全文计算，说话人分离评估为 N/A
 4. **脚本不会自动安装依赖**：需要手动安装 `dashscope` SDK（若需要）
@@ -165,6 +169,7 @@ python3 -m py_compile tests/asr_eval/run_eval.py
 python3 -m py_compile tests/asr_eval/providers/__init__.py
 python3 -m py_compile tests/asr_eval/providers/paraformer.py
 python3 -m py_compile tests/asr_eval/providers/qwen_asr.py
+python3 -m py_compile tests/asr_eval/providers/qwen_asr_filetrans.py
 
 # dry-run 模式（验证 CLI 参数解析）
 python3 tests/asr_eval/run_eval.py --dry-run

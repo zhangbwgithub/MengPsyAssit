@@ -1,0 +1,92 @@
+[
+  {
+    "model": "qwen3-asr-flash-filetrans",
+    "audio": "oss://dashscope-instant/aa3822238de63299184d939be5c49c55/2026-08-25/7b95b4e5-7521-9983-a757-e19ee589462e/01_normal_dialogue.wav",
+    "status": "ok",
+    "latency_s": 3.2821623189374804,
+    "full_text": "你好，请坐。这周过得怎么样？嗯，就是还是老样子，最近工作压力特别大，晚上经常睡不着。睡不着的时候脑子里一般在想些什么呢？就是白天那些事嘛，然后会反复想，领导说的那句话到底是什么意思，然后越想越清醒。听起来到了晚上，白天的那些事情会被反复的拿出来想。对，然后那个，其实我也知道想这些没什么用，但是就是停不下来。停不下来本身可能比想的内容更让人累。嗯，对，就是那种感觉，白天已经很累了，晚上还要继续。",
+    "sentences": [
+      {
+        "text": "你好，请坐。这周过得怎么样？嗯，就是还是老样子，最近工作压力特别大，晚上经常睡不着。睡不着的时候脑子里一般在想些什么呢？就是白天那些事嘛，然后会反复想，领导说的那句话到底是什么意思，然后越想越清醒。听起来到了晚上，白天的那些事情会被反复的拿出来想。对，然后那个，其实我也知道想这些没什么用，但是就是停不下来。",
+        "begin_ms": 0,
+        "end_ms": 32560,
+        "speaker_id": null
+      },
+      {
+        "text": "停不下来本身可能比想的内容更让人累。嗯，对，就是那种感觉，白天已经很累了，晚上还要继续。",
+        "begin_ms": 32660,
+        "end_ms": 43360,
+        "speaker_id": null
+      }
+    ],
+    "cer": 0.017045454545454544,
+    "speaker_stats": {
+      "supported": false
+    },
+    "error": null
+  },
+  {
+    "model": "qwen3-asr-flash-filetrans",
+    "audio": "oss://dashscope-instant/aa3822238de63299184d939be5c49c55/2026-08-25/90b72443-f2e0-9c61-a474-037dd6930eef/02_overlap_interruption.wav",
+    "status": "ok",
+    "latency_s": 18.662628770805895,
+    "full_text": "那我们就从你上次提到的那件事开始聊吧。嗯，就是上周和我妈打电话那件事，其实我当时特别委屈，然后她一直讲道理，我就觉得更堵得慌。她讲道理的时候，你的感受是？就觉得很堵，不想再听了。好，我们慢一点，一句一句来。",
+    "sentences": [
+      {
+        "text": "那我们就从你上次提到的那件事开始聊吧。嗯，就是上周和我妈打电话那件事，其实我当时特别委屈，然后她一直讲道理，我就觉得更堵得慌。她讲道理的时候，你的感受是？就觉得很堵，不想再听了。",
+        "begin_ms": 0,
+        "end_ms": 15960,
+        "speaker_id": null
+      },
+      {
+        "text": "好，我们慢一点，一句一句来。",
+        "begin_ms": 15960,
+        "end_ms": 18680,
+        "speaker_id": null
+      }
+    ],
+    "cer": 0.1,
+    "speaker_stats": {
+      "supported": false
+    },
+    "error": null
+  },
+  {
+    "model": "qwen3-asr-flash-filetrans",
+    "audio": "oss://dashscope-instant/aa3822238de63299184d939be5c49c55/2026-08-25/0d591b9a-a8b3-931b-aeb3-aef909ae5d38/03_long_pauses.wav",
+    "status": "ok",
+    "latency_s": 3.292272607795894,
+    "full_text": "上次我们聊到你和父亲的关系，这周有没有想起什么？嗯。想起来一件小事，就是我小学的时候有一次下雨，他来给我送伞。嗯，那次送伞。其实那时候我不太想跟他说谢谢。这句话里好像有很多东西，愿意多说一点吗？就是说不出口。",
+    "sentences": [
+      {
+        "text": "上次我们聊到你和父亲的关系，这周有没有想起什么？嗯。",
+        "begin_ms": 0,
+        "end_ms": 5040,
+        "speaker_id": null
+      },
+      {
+        "text": "想起来一件小事，就是我小学的时候有一次下雨，他来给我送伞。嗯，那次送伞。",
+        "begin_ms": 10000,
+        "end_ms": 19280,
+        "speaker_id": null
+      },
+      {
+        "text": "其实那时候我不太想跟他说谢谢。这句话里好像有很多东西，愿意多说一点吗？",
+        "begin_ms": 26220,
+        "end_ms": 35160,
+        "speaker_id": null
+      },
+      {
+        "text": "就是说不出口。",
+        "begin_ms": 39000,
+        "end_ms": 41560,
+        "speaker_id": null
+      }
+    ],
+    "cer": 0.0,
+    "speaker_stats": {
+      "supported": false
+    },
+    "error": null
+  }
+]
