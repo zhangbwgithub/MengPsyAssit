@@ -44,3 +44,7 @@ logs/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# TTS 合成中间产物（含临时签名URL）
+tests/synth/_parts/
+tests/asr_eval/results/
