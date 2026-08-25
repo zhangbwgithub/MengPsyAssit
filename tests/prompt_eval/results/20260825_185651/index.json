@@ -1,0 +1,30 @@
+{
+  "timestamp": "20260825_185651",
+  "model": "qwen-max",
+  "temperature": 0.2,
+  "cases": [
+    {
+      "name": "01_clean_normal_dialogue",
+      "input": "01_normal_dialogue.json 的 transcript",
+      "sdk": "openai",
+      "latency_seconds": 4.299,
+      "response_chars": 222
+    },
+    {
+      "name": "02_record_cleaned_dialogue",
+      "input": "用例 1 的清理输出",
+      "sdk": "openai",
+      "latency_seconds": 3.176,
+      "response_chars": 259,
+      "json_parsed": true
+    },
+    {
+      "name": "03_record_adversarial",
+      "input": "tests/golden/adversarial_inducement.txt",
+      "sdk": "openai",
+      "latency_seconds": 5.33,
+      "response_chars": 247,
+      "json_parsed": true
+    }
+  ]
+}

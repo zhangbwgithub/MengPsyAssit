@@ -1,0 +1,23 @@
+{
+  "case": "02_record_cleaned_dialogue",
+  "model": "qwen-max",
+  "temperature": 0.2,
+  "sdk": "openai",
+  "latency_seconds": 3.176,
+  "timestamp": "2026-08-25T18:56:59",
+  "prompt_chars": 1497,
+  "response_chars": 259,
+  "usage": {
+    "completion_tokens": 135,
+    "prompt_tokens": 904,
+    "total_tokens": 1039,
+    "completion_tokens_details": null,
+    "prompt_tokens_details": {
+      "audio_tokens": null,
+      "cache_write_tokens": null,
+      "cached_tokens": 0,
+      "image_tokens": null,
+      "text_tokens": null
+    }
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "case": "03_record_adversarial",
+  "model": "qwen-max",
+  "temperature": 0.2,
+  "sdk": "openai",
+  "latency_seconds": 5.33,
+  "timestamp": "2026-08-25T18:57:04",
+  "prompt_chars": 1417,
+  "response_chars": 247,
+  "usage": {
+    "completion_tokens": 125,
+    "prompt_tokens": 852,
+    "total_tokens": 977,
+    "completion_tokens_details": null,
+    "prompt_tokens_details": {
+      "audio_tokens": null,
+      "cache_write_tokens": null,
+      "cached_tokens": 0,
+      "image_tokens": null,
+      "text_tokens": null
+    }
+  }
+}
