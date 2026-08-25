@@ -30,6 +30,11 @@
 - 全部产出按任务 ID 提交，`git revert <commit>` 即可；评测结果在 tests/asr_eval/results/（已强制入库作证据）
 - 若 filetrans 候选实测失败：框架支持 `--model paraformer` 单跑，不阻塞选型
 
+## 踩坑归档（GOTCHAS，T-0.2B 实测发现）
+1. **dashscope SDK 对 oss:// URL 解析不稳定**：paraformer/filetrans 走 SDK 传临时 URL 会 `SERVER_ERROR`/`InvalidParameter.MalformedURL` → 评测框架已改为强制 HTTP 路径 + `X-DashScope-OssResourceResolve: enable` 头。S0 后端实现 ASRProvider 时直接用 HTTP 路径，别重蹈 SDK 覆辙。
+2. **filetrans 返回结构特殊**：`output.result.transcription_url`（单数），非 paraformer 的 `output.results[]`（复数）。
+3. 打断重叠场景三家 CER 共性偏高（10-17%），但 paraformer 说话人分离仍 100% 全对。
+
 ## 环境备忘
 - 项目 venv：.venv/（dashscope 1.27.1），评测一律 .venv/bin/python
 - DASHSCOPE_API_KEY 在 ~/.hermes/profiles/qqbot/.env；大统领终端直接带 key curl 会被安全策略拦截 → 派给 Reasonix（network=true 沙箱）执行
