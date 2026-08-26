@@ -1,0 +1,13 @@
+[INFO] 冒烟开始 20260826_005047，结果落盘 /home/houmo/meng/MengPsyAssit/tests/e2e/results/20260826_005047
+[INFO] 后端启动中（uvicorn:8661）…
+[INFO] /health → {'status': 'ok', 'app': 'psy-backend', 'env': 'dev'}
+[INFO] 上传音频 /home/houmo/meng/MengPsyAssit/tests/audio/01_normal_dialogue.wav（1388238 bytes）
+[INFO] POST /sessions → HTTP 200
+[INFO] session_id=1，初始状态=uploading
+[INFO] 状态流转: transcribing
+[INFO] 状态流转: done
+[INFO] 终态: done（状态序列 uploading → transcribing → done）
+[PASS] 全部断言通过：done / segments≥10 / T+P / cleaned_text / record 三字段
+[PASS] segments=11，speakers=['P', 'T']，record.summary 前 80 字='来访者自述最近工作压力大，晚上经常睡不着，会反复想白天的事，尤其是领导说的话，越想越清醒；来访者自述知道想这些没用但停不下来。咨询师询问近况和失眠时的想法，并复'
+[INFO] 结果文件目录: /home/houmo/meng/MengPsyAssit/tests/e2e/results/20260826_005047
+[INFO] 落盘文件: ['final_session.json', 'health.json', 'smoke.log', 'upload.json']  (检查: 无 authorization/api_key 字段入盘)

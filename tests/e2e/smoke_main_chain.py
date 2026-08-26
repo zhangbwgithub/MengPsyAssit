@@ -11,7 +11,10 @@
 
 用法：
     .venv/bin/python tests/e2e/smoke_main_chain.py
+    .venv/bin/python tests/e2e/smoke_main_chain.py --database-url sqlite:////绝对路径/data/app.db
     DASHSCOPE_API_KEY 从调用方环境继承；本脚本不打印、不落盘任何密钥。
+    后端 cwd 固定为仓库根，避免相对路径 sqlite:///data/app.db 解析歧义；
+    --database-url 可显式指定 DATABASE_URL（真实冒烟建议用绝对路径指向旧库）。
 """
 
 from __future__ import annotations
@@ -87,8 +90,15 @@ def multipart_body(fields: dict[str, str], file_field: str, filename: str, data:
 
 def run_server(settings: dict) -> subprocess.Popen:
     env = dict(os.environ)
+    prepend_path = settings.pop("PREPEND_SYS_PATH", "")
     for key, value in settings.items():
         env[key] = value
+    if prepend_path and prepend_path not in env.get("PYTHONPATH", "").split(os.pathsep):
+        env["PYTHONPATH"] = (
+            prepend_path + os.pathsep + env["PYTHONPATH"]
+            if env.get("PYTHONPATH")
+            else prepend_path
+        )
     proc = subprocess.Popen(
         [
             str(REPO_ROOT / ".venv" / "bin" / "python"),
@@ -100,7 +110,7 @@ def run_server(settings: dict) -> subprocess.Popen:
             "--host",
             "127.0.0.1",
         ],
-        cwd=str(REPO_ROOT / "app" / "backend"),
+        cwd=str(REPO_ROOT),
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -123,6 +133,11 @@ def wait_health(timeout=60):
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--keep-server", action="store_true", help="冒烟后不关闭后端")
+    parser.add_argument(
+        "--database-url",
+        default="",
+        help="显式设置 DATABASE_URL（如 sqlite:////绝对路径/data/app.db），默认继承环境变量",
+    )
     args = parser.parse_args()
 
     if not os.environ.get("DASHSCOPE_API_KEY"):
@@ -151,7 +166,13 @@ def main() -> int:
 
     server = None
     try:
-        server = run_server({"DASHSCOPE_API_KEY": os.environ["DASHSCOPE_API_KEY"]})
+        server_settings = {
+            "DASHSCOPE_API_KEY": os.environ["DASHSCOPE_API_KEY"],
+            "PREPEND_SYS_PATH": str(REPO_ROOT / "app" / "backend" / "src"),
+        }
+        if args.database_url:
+            server_settings["DATABASE_URL"] = args.database_url
+        server = run_server(server_settings)
         write("[INFO] 后端启动中（uvicorn:8661）…")
         health = wait_health()
         write(f"[INFO] /health → {health}")
