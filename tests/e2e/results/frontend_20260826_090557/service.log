@@ -1,0 +1,3 @@
+[smoke] backend ready at http://127.0.0.1:8660/health
+[smoke] frontend ready at http://127.0.0.1:5199/
+[smoke] cleaning up...
