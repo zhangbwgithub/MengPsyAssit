@@ -35,6 +35,13 @@
 - 长音频（180 分钟）未实测，只验 ≤43s（S1 分片上传时覆盖）
 - 多会话并发未测（BackgroundTasks 串行，S0 单机单用户够用）
 
+## 增补：04 号真实音频实测（2026-08-26 晚）
+
+- 陛下提供 `xhs_audio.mp3`（5.5min/4.0MB）已入库 `tests/audio/04_xhs_audio.mp3`（.gitignore 放行 `!tests/audio/*.mp3`）
+- 全链路实测：上传→75s done，59 段；**说话人映射需选 `speaker_zero=P`**（该音频说话人 0 是来访者，默认 T 会反）——前端有单选开关，已验证两种映射均可切换
+- paraformer 分离小错位 1 处（#46 句被拦腰拆），正是 S2 说话人映射编辑的设计场景，S0 不修
+- T-S0.4-R2：记录卡片「其他信息」从 JSON 裸奔改为一行可读元信息（模型/提示词版本/会话编号），陛下指出+真实浏览器复验通过，合 main c727fa3
+
 ## 如何回滚
 
 - 增量整体回滚：`git revert` 各任务 merge 提交（均 --no-ff）；tag 可 `git tag -d v0.1-skeleton && git push origin :refs/tags/v0.1-skeleton`
