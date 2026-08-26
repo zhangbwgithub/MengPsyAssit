@@ -1,0 +1,42 @@
+INFO:     Started server process [2563531]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8660 (Press CTRL+C to quit)
+INFO:     127.0.0.1:33030 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33042 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33058 - "POST /sessions HTTP/1.1" 200 OK
+2026-08-26 09:31:51 INFO httpx HTTP Request: POST https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription "HTTP/1.1 200 OK"
+2026-08-26 09:31:51 INFO psyapp.providers.paraformer paraformer 任务已提交: task_id=351ce9cb-5376-45f5-b21c-04a271182b6a
+2026-08-26 09:31:51 INFO httpx HTTP Request: GET https://dashscope.aliyuncs.com/api/v1/tasks/351ce9cb-5376-45f5-b21c-04a271182b6a "HTTP/1.1 200 OK"
+2026-08-26 09:31:54 INFO httpx HTTP Request: GET https://dashscope.aliyuncs.com/api/v1/tasks/351ce9cb-5376-45f5-b21c-04a271182b6a "HTTP/1.1 200 OK"
+2026-08-26 09:31:54 INFO httpx HTTP Request: GET https://dashscope-result-bj.oss-cn-beijing.aliyuncs.com/prod/paraformer-v2/20260826/09%3A31/10bbd31f-0a4e-4a84-8b30-7a7146b3a083-1.json?Expires=1787794314&OSSAccessKeyId=LTAI5tGzqbGcEmE58b221XQy&Signature=DkGpzg6nqLDXA65Dz3ylx4%2Berxk%3D&response-content-disposition=attachment%3Bfilename%3D10bbd31f-0a4e-4a84-8b30-7a7146b3a083-1.json "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:38700 - "GET /sessions/1 HTTP/1.1" 200 OK
+2026-08-26 09:31:59 INFO httpx HTTP Request: POST https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:38716 - "GET /sessions/1 HTTP/1.1" 200 OK
+2026-08-26 09:32:02 INFO httpx HTTP Request: POST https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:54524 - "GET /sessions/1 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54526 - "POST /sessions HTTP/1.1" 200 OK
+2026-08-26 09:32:06 INFO httpx HTTP Request: POST https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription "HTTP/1.1 200 OK"
+2026-08-26 09:32:06 INFO psyapp.providers.paraformer paraformer 任务已提交: task_id=209b5602-e6ae-49f4-9b3b-fc5caad0589a
+2026-08-26 09:32:07 INFO httpx HTTP Request: GET https://dashscope.aliyuncs.com/api/v1/tasks/209b5602-e6ae-49f4-9b3b-fc5caad0589a "HTTP/1.1 200 OK"
+2026-08-26 09:32:10 INFO httpx HTTP Request: GET https://dashscope.aliyuncs.com/api/v1/tasks/209b5602-e6ae-49f4-9b3b-fc5caad0589a "HTTP/1.1 200 OK"
+2026-08-26 09:32:10 INFO httpx HTTP Request: GET https://dashscope-result-bj.oss-cn-beijing.aliyuncs.com/prod/paraformer-v2/20260826/09%3A32/9209bc3e-9597-496f-9311-d87a7b23afcb-1.json?Expires=1787794328&OSSAccessKeyId=LTAI5tGzqbGcEmE58b221XQy&Signature=bdVwwQgThugQvuyL%2B2KUiTelEKU%3D&response-content-disposition=attachment%3Bfilename%3D9209bc3e-9597-496f-9311-d87a7b23afcb-1.json "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:54542 - "GET /sessions/2 HTTP/1.1" 200 OK
+2026-08-26 09:32:12 INFO httpx HTTP Request: POST https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-26 09:32:15 INFO httpx HTTP Request: POST https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:37420 - "GET /sessions/2 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37432 - "POST /sessions HTTP/1.1" 200 OK
+2026-08-26 09:32:17 INFO httpx HTTP Request: POST https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription "HTTP/1.1 200 OK"
+2026-08-26 09:32:17 INFO psyapp.providers.paraformer paraformer 任务已提交: task_id=27cd6d5f-bcc0-4569-b9a2-8010a1082529
+2026-08-26 09:32:17 INFO httpx HTTP Request: GET https://dashscope.aliyuncs.com/api/v1/tasks/27cd6d5f-bcc0-4569-b9a2-8010a1082529 "HTTP/1.1 200 OK"
+2026-08-26 09:32:20 INFO httpx HTTP Request: GET https://dashscope.aliyuncs.com/api/v1/tasks/27cd6d5f-bcc0-4569-b9a2-8010a1082529 "HTTP/1.1 200 OK"
+2026-08-26 09:32:20 INFO httpx HTTP Request: GET https://dashscope-result-bj.oss-cn-beijing.aliyuncs.com/prod/paraformer-v2/20260826/09%3A32/4cc0065d-0f0b-4f37-b7ed-3266b9298c1d-1.json?Expires=1787794338&OSSAccessKeyId=LTAI5tGzqbGcEmE58b221XQy&Signature=TnWa5V%2BWTiakp%2Be8fWojqDB7qdw%3D&response-content-disposition=attachment%3Bfilename%3D4cc0065d-0f0b-4f37-b7ed-3266b9298c1d-1.json "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:37440 - "GET /sessions/3 HTTP/1.1" 200 OK
+2026-08-26 09:32:23 INFO httpx HTTP Request: POST https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:34154 - "GET /sessions/3 HTTP/1.1" 200 OK
+2026-08-26 09:32:28 INFO httpx HTTP Request: POST https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:34170 - "GET /sessions/3 HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [2563531]
