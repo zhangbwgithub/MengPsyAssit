@@ -1,5 +1,10 @@
 """Provider 层单元测试（无网络）：工厂选择 + paraformer 响应解析 + LLM 消息组装。"""
 
+import os
+import subprocess
+from pathlib import Path
+from typing import Any
+
 import pytest
 
 from psyapp.config import Settings
@@ -139,6 +144,46 @@ def test_parse_transcript_empty_transcripts():
     assert result.segments == []
     result2 = parse_transcript({})
     assert result2.segments == []
+
+
+# ── paraformer OSS 上传 ───────────────────────────────────────
+
+
+def test_upload_oss_passes_api_key_via_env(monkeypatch, tmp_path):
+    """_upload_oss 必须将 DASHSCOPE_API_KEY 通过 env 传给子进程，而非命令行。"""
+    fake_key = "fake-dashscope-key-for-test"
+    provider = DashScopeParaformer(api_key=fake_key)
+
+    audio = tmp_path / "dummy.wav"
+    audio.write_text("fake audio")
+
+    captured: dict[str, Any] = {}
+
+    def fake_run(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+
+        class FakeProc:
+            returncode = 0
+            stdout = "oss://some-bucket/object.wav extra text\n"
+            stderr = ""
+
+        return FakeProc()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        "psyapp.providers.paraformer._resolve_dashscope_cli",
+        lambda: Path("/fake/dashscope"),
+    )
+
+    url = provider._upload_oss(str(audio))
+    assert url == "oss://some-bucket/object.wav"
+
+    env = captured["kwargs"].get("env")
+    assert env is not None
+    assert env["DASHSCOPE_API_KEY"] == fake_key
+    # 确认继承了当前进程环境，而非仅含单个变量
+    assert "PATH" in env or len(os.environ) == 0
 
 
 # ── qwen 消息组装（schema_hint）────────────────────────────────

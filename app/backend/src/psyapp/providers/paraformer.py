@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import subprocess
 import sys
@@ -135,6 +136,7 @@ class DashScopeParaformer(ASRProvider):
                 encoding="utf-8",
                 check=False,
                 timeout=_UPLOAD_TIMEOUT_S,
+                env={**os.environ, "DASHSCOPE_API_KEY": self._api_key},
             )
         except subprocess.TimeoutExpired as exc:
             raise ProviderError(f"oss.upload 超时（{_UPLOAD_TIMEOUT_S}s）: {path}") from exc
