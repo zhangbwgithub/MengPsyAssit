@@ -112,8 +112,8 @@ def test_upload_full_chain_creates_segments_clean_and_record(client, monkeypatch
     try:
         assert db.query(Segment).filter(Segment.session_id == session_id).count() == 4
         rec = db.query(Record).filter(Record.session_id == session_id).one()
-        assert rec.basic_info["provider"] == "qwen"
-        assert rec.basic_info["model"] == "qwen-max"
+        assert rec.basic_info["provider"] == "mimo"
+        assert rec.basic_info["model"] == "mimo-v2.5-pro"
         assert rec.basic_info["prompt_version"] == "v1"
         jobs = db.query(Job).filter(Job.session_id == session_id).all()
         job_types = {j.type for j in jobs}
