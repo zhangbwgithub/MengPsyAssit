@@ -12,6 +12,7 @@ dependencies = [
     "uvicorn[standard]",
     "sqlalchemy>=2",
     "pydantic-settings",
+    "python-multipart",
 ]
 
 [project.optional-dependencies]

@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     asr_provider: str = "paraformer"
     llm_provider: str = "qwen"
     llm_model: str = "qwen-max"
+    # Prompt 模板目录（默认 app/backend/prompts，相对仓库根解析）
+    prompts_dir: str = ""
 
     @model_validator(mode="after")
     def _ensure_data_dir(self) -> "Settings":

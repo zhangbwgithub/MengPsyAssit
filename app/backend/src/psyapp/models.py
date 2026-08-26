@@ -61,6 +61,7 @@ class Session(Base):
     started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
     duration_sec: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     audio_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    cleaned_text: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class Segment(Base):
