@@ -16,6 +16,10 @@ class Settings(BaseSettings):
     data_dir: str = "data"
     dev_user_id: int = 1
     dashscope_api_key: str = Field(default="", repr=False)
+    # Provider 选择（D8 架构基石：实现可配置可替换，未知值在工厂处抛错）
+    asr_provider: str = "paraformer"
+    llm_provider: str = "qwen"
+    llm_model: str = "qwen-max"
 
     @model_validator(mode="after")
     def _ensure_data_dir(self) -> "Settings":

@@ -1,0 +1,15 @@
+{
+  "provider": "qwen",
+  "model": "qwen-max",
+  "latency_s": 1.32,
+  "request": {
+    "messages": [
+      {
+        "role": "user",
+        "content": "用一句话说明什么是心理咨询记录"
+      }
+    ],
+    "temperature": 0.3
+  },
+  "response_content": "心理咨询记录是指在咨询过程中，由心理咨询师对来访者的个人信息、咨询内容、过程及进展等进行的书面或电子形式的系统性记载。"
+}
