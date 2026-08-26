@@ -1,4 +1,9 @@
-"""Provider 层单元测试（无网络）：工厂选择 + paraformer 响应解析 + qwen 消息组装。"""
+"""Provider 层单元测试（无网络）：工厂选择 + paraformer 响应解析 + LLM 消息组装。"""
+
+import os
+import subprocess
+from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -6,7 +11,9 @@ from psyapp.config import Settings
 from psyapp.providers import (
     ASRProvider,
     DashScopeParaformer,
+    DeepseekLLM,
     LLMProvider,
+    MimoLLM,
     ProviderError,
     QwenLLM,
     get_asr_provider,
@@ -20,6 +27,8 @@ def _settings(tmp_path, **overrides) -> Settings:
         "database_url": f"sqlite:///{tmp_path / 'test.db'}",
         "data_dir": str(tmp_path),
         "dashscope_api_key": "test-key",
+        "xiaomi_cn_api_key": "test-key",
+        "deepseek_api_key": "test-key",
     }
     kwargs.update(overrides)
     return Settings(**kwargs)
@@ -45,14 +54,36 @@ FAKE_TRANSCRIPT = {
 # ── 工厂 ────────────────────────────────────────────────────────
 
 
-def test_factory_defaults_select_paraformer_and_qwen(tmp_path):
+def test_factory_defaults_select_paraformer_and_mimo(tmp_path):
+    """T-S0.6：LLM 默认从 qwen 切换为 mimo（mimo-v2.5-pro）。"""
     settings = _settings(tmp_path)
     asr = get_asr_provider(settings)
     llm = get_llm_provider(settings)
     assert isinstance(asr, ASRProvider) and isinstance(asr, DashScopeParaformer)
-    assert isinstance(llm, LLMProvider) and isinstance(llm, QwenLLM)
+    assert isinstance(llm, LLMProvider) and isinstance(llm, MimoLLM)
     assert asr.name == "paraformer"
-    assert llm.name == "qwen"
+    assert llm.name == "mimo"
+    assert settings.llm_provider == "mimo"
+    assert settings.llm_model == "mimo-v2.5-pro"
+
+
+def test_factory_select_deepseek_and_qwen(tmp_path):
+    """llm_provider=deepseek / qwen 各选出对应实现；llm_model 留空时跟随 provider 默认。"""
+    ds = _settings(tmp_path, llm_provider="deepseek")
+    llm = get_llm_provider(ds)
+    assert isinstance(llm, DeepseekLLM) and llm.name == "deepseek"
+    assert ds.llm_model == "deepseek-v4-flash"
+
+    qw = _settings(tmp_path, llm_provider="qwen")
+    llm = get_llm_provider(qw)
+    assert isinstance(llm, QwenLLM) and llm.name == "qwen"
+    assert qw.llm_model == "qwen-max"
+
+
+def test_factory_explicit_llm_model_overrides_default(tmp_path):
+    """显式 LLM_MODEL 覆盖 provider 默认模型。"""
+    settings = _settings(tmp_path, llm_provider="qwen", llm_model="qwen-plus")
+    assert settings.llm_model == "qwen-plus"
 
 
 def test_factory_unknown_asr_provider_raises(tmp_path):
@@ -62,7 +93,7 @@ def test_factory_unknown_asr_provider_raises(tmp_path):
 
 
 def test_factory_unknown_llm_provider_raises(tmp_path):
-    settings = _settings(tmp_path, llm_provider="deepseek")
+    settings = _settings(tmp_path, llm_provider="xxx")
     with pytest.raises(ValueError, match="llm_provider"):
         get_llm_provider(settings)
 
@@ -72,6 +103,19 @@ def test_factory_empty_api_key_raises(tmp_path):
     with pytest.raises(ProviderError, match="dashscope_api_key"):
         get_asr_provider(settings)
     with pytest.raises(ProviderError, match="dashscope_api_key"):
+        get_llm_provider(_settings(tmp_path, llm_provider="qwen", dashscope_api_key=""))
+
+
+def test_factory_mimo_missing_key_raises_with_env_name(tmp_path):
+    """mimo 无 key：抛 ProviderError，错误信息含环境变量名 XIAOMI_CN_API_KEY。"""
+    settings = _settings(tmp_path, xiaomi_cn_api_key="")
+    with pytest.raises(ProviderError, match="XIAOMI_CN_API_KEY"):
+        get_llm_provider(settings)
+
+
+def test_factory_deepseek_missing_key_raises_with_env_name(tmp_path):
+    settings = _settings(tmp_path, llm_provider="deepseek", deepseek_api_key="")
+    with pytest.raises(ProviderError, match="DEEPSEEK_API_KEY"):
         get_llm_provider(settings)
 
 
@@ -100,6 +144,46 @@ def test_parse_transcript_empty_transcripts():
     assert result.segments == []
     result2 = parse_transcript({})
     assert result2.segments == []
+
+
+# ── paraformer OSS 上传 ───────────────────────────────────────
+
+
+def test_upload_oss_passes_api_key_via_env(monkeypatch, tmp_path):
+    """_upload_oss 必须将 DASHSCOPE_API_KEY 通过 env 传给子进程，而非命令行。"""
+    fake_key = "fake-dashscope-key-for-test"
+    provider = DashScopeParaformer(api_key=fake_key)
+
+    audio = tmp_path / "dummy.wav"
+    audio.write_text("fake audio")
+
+    captured: dict[str, Any] = {}
+
+    def fake_run(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+
+        class FakeProc:
+            returncode = 0
+            stdout = "oss://some-bucket/object.wav extra text\n"
+            stderr = ""
+
+        return FakeProc()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        "psyapp.providers.paraformer._resolve_dashscope_cli",
+        lambda: Path("/fake/dashscope"),
+    )
+
+    url = provider._upload_oss(str(audio))
+    assert url == "oss://some-bucket/object.wav"
+
+    env = captured["kwargs"].get("env")
+    assert env is not None
+    assert env["DASHSCOPE_API_KEY"] == fake_key
+    # 确认继承了当前进程环境，而非仅含单个变量
+    assert "PATH" in env or len(os.environ) == 0
 
 
 # ── qwen 消息组装（schema_hint）────────────────────────────────

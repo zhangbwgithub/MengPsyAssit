@@ -1,0 +1,47 @@
+[
+  {
+    "provider": "mimo",
+    "model": "mimo-v2.5-pro",
+    "latency_s": 6.18,
+    "request": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "用一句话说明什么是心理咨询记录"
+        }
+      ],
+      "temperature": 0.3
+    },
+    "response_content": "心理咨询记录是心理咨询师在咨询过程中，对来访者的基本信息、主诉问题、咨询过程、干预方法及来访者反应等进行的专业书面记录，既用于跟踪治疗进展，也是重要的专业文档和伦理保障。"
+  },
+  {
+    "provider": "deepseek",
+    "model": "deepseek-v4-flash",
+    "latency_s": 1.87,
+    "request": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "用一句话说明什么是心理咨询记录"
+        }
+      ],
+      "temperature": 0.3
+    },
+    "response_content": "心理咨询记录是咨询师在每次会谈后对来访者的基本情况、谈话内容、心理状态、干预要点及进展评估等进行的书面记载，用于追踪咨询过程并保障服务的连续性和专业性。"
+  },
+  {
+    "provider": "qwen",
+    "model": "qwen-max",
+    "latency_s": 1.7,
+    "request": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "用一句话说明什么是心理咨询记录"
+        }
+      ],
+      "temperature": 0.3
+    },
+    "response_content": "心理咨询记录是心理咨询师在咨询过程中对来访者的个人信息、咨询内容、进展及效果等进行详细记载的文档。"
+  }
+]

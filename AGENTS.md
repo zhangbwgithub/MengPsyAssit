@@ -22,6 +22,7 @@
   - 静态检查：`.venv/bin/ruff check app/backend`
   - 启动：`.venv/bin/python -m uvicorn psyapp.main:app --port 8660`
   - 导入自检：`.venv/bin/python -c "import psyapp.main"`
+- LLM：默认 mimo（mimo-v2.5-pro，T-S0.6 陛下拍板），可选 qwen / deepseek——`.env` 里 `LLM_PROVIDER` 切换；`llm_model` 留空自动跟随 provider 默认模型。三 key：XIAOMI_CN_API_KEY / DEEPSEEK_API_KEY / DASHSCOPE_API_KEY。
 
 ## 红线清单
 - `.env` / `.env.*` / `*_api_key*` 永不进 git；不新建 `.env`（由编排方管理）。

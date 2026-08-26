@@ -5,9 +5,16 @@ from pathlib import Path
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# 各 LLM provider 的默认模型（llm_model 留空时按 provider 填充）
+LLM_DEFAULT_MODELS = {
+    "mimo": "mimo-v2.5-pro",
+    "deepseek": "deepseek-v4-flash",
+    "qwen": "qwen-max",
+}
+
 
 class Settings(BaseSettings):
-    """全局配置。dashscope_api_key 仅定义，repr 不暴露。"""
+    """全局配置。各 api_key 仅定义，repr 不暴露。"""
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
@@ -16,12 +23,23 @@ class Settings(BaseSettings):
     data_dir: str = "data"
     dev_user_id: int = 1
     dashscope_api_key: str = Field(default="", repr=False)
+    xiaomi_cn_api_key: str = Field(default="", repr=False)
+    deepseek_api_key: str = Field(default="", repr=False)
     # Provider 选择（D8 架构基石：实现可配置可替换，未知值在工厂处抛错）
+    # T-S0.6：LLM 默认切换为 mimo（陛下拍板，成本更低，实测 59/59 标签保真）
     asr_provider: str = "paraformer"
-    llm_provider: str = "qwen"
-    llm_model: str = "qwen-max"
+    llm_provider: str = "mimo"
+    # llm_model 留空 = 跟随 llm_provider 的默认模型（见下方 validator）；
+    # 显式设置（如 LLM_MODEL=qwen-max）则覆盖。这样仅切 LLM_PROVIDER 时模型自动跟随。
+    llm_model: str = ""
     # Prompt 模板目录（默认 app/backend/prompts，相对仓库根解析）
     prompts_dir: str = ""
+
+    @model_validator(mode="after")
+    def _resolve_llm_model(self) -> "Settings":
+        if not self.llm_model:
+            self.llm_model = LLM_DEFAULT_MODELS.get(self.llm_provider, "")
+        return self
 
     @model_validator(mode="after")
     def _ensure_data_dir(self) -> "Settings":
