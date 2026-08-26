@@ -37,6 +37,8 @@ logs/
 *.wav
 *.mp3
 *.m4a
+# 例外：P0 合成测试音频（单个均 <5MB，工作流允许入库）
+!tests/audio/*.wav
 *.opus
 
 # === 编辑器/系统 ===
