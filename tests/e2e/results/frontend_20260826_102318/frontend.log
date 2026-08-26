@@ -1,0 +1,7 @@
+
+> psy-frontend@0.1.0 preview
+> vite preview --port 5199
+
+Port 5199 is in use, trying another one...
+  ➜  Local:   http://localhost:5200/
+  ➜  Network: use --host to expose

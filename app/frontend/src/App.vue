@@ -127,6 +127,16 @@ function splitCleanedText(text) {
   return text.split('\n').filter((line) => line.trim().length > 0)
 }
 
+const metaInfoText = computed(() => {
+  const info = sessionData.value?.record?.basic_info
+  if (!info) return ''
+  const parts = []
+  if (info.model) parts.push(`模型：${info.model}`)
+  if (info.prompt_version) parts.push(`提示词版本：${info.prompt_version}`)
+  if (info.session_id) parts.push(`会话编号：#${info.session_id}`)
+  return parts.join(' · ')
+})
+
 onUnmounted(stopPolling)
 </script>
 
@@ -259,7 +269,7 @@ onUnmounted(stopPolling)
             </div>
             <div class="record-item" v-if="sessionData.record.basic_info">
               <span class="record-key">其他信息</span>
-              <pre>{{ JSON.stringify(sessionData.record.basic_info, null, 2) }}</pre>
+              <p class="meta-info">{{ metaInfoText }}</p>
             </div>
           </div>
         </div>
@@ -596,13 +606,10 @@ body {
   font-size: 0.95rem;
 }
 
-.record-item pre {
+.meta-info {
   margin: 0;
+  color: var(--muted);
   font-size: 0.85rem;
-  background: #fff;
-  padding: 8px;
-  border-radius: 6px;
-  overflow-x: auto;
 }
 
 .tag-list {
