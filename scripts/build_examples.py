@@ -63,19 +63,36 @@ def build(session_id, audio_label, audio_desc):
     open(md_path, "w").write("\n".join(md))
 
     # ── PDF 气泡版 HTML ──
+    import html as _html
+    def bubble(speaker, tag, text):
+        cls = "t" if speaker == "T" else "p"
+        who = "咨询师 T" if speaker == "T" else "来访者 P"
+        text = _html.escape(text)
+        return (
+            f'<div class="msg {cls}"><div class="who">{who}'
+            f'<span class="ts">{tag}</span></div>'
+            f'<div class="txt">{text}</div></div>'
+        )
+
     bubbles = []
     for s in segs:
-        cls = "t" if s["speaker"] == "T" else "p"
-        who = "咨询师 T" if s["speaker"] == "T" else "来访者 P"
-        bubbles.append(
-            f'<div class="msg {cls}"><div class="who">{who}'
-            f'<span class="ts">#{s["seq"]} · {fmt(s["start_ms"])}–{fmt(s["end_ms"])}</span></div>'
-            f'<div class="txt">{s["content"]}</div></div>'
-        )
-    topics = "".join(f"<li>{t}</li>" for t in bi.get("client_reported_topics", []))
-    cleaned_html = "<br>".join(
-        line.strip() for line in session["cleaned_text"].splitlines() if line.strip()
-    )
+        bubbles.append(bubble(s["speaker"], f"#{s['seq']} · {fmt(s['start_ms'])}–{fmt(s['end_ms'])}", s["content"]))
+
+    # 清理后文本：解析 T:/P: 前缀，剥 ``` 围栏，同款气泡分角色
+    import re as _re
+    cleaned_bubbles = []
+    for line in session["cleaned_text"].splitlines():
+        line = line.strip()
+        if not line or line.strip("`") == "" or line.startswith("```"):
+            continue
+        m = _re.match(r"^(T|P)[:：]\s*(.*)$", line)
+        if m:
+            cleaned_bubbles.append(bubble(m.group(1), "", m.group(2)))
+        else:
+            cleaned_bubbles.append(f'<div class="txt plainline">{line}</div>')
+    topics = "".join(f"<li>{_html.escape(t)}</li>" for t in bi.get("client_reported_topics", []))
+    _summary = _html.escape(record["summary"])
+    _work = _html.escape(record["therapist_work"])
 
     html = f"""<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8"><style>
@@ -94,7 +111,9 @@ h2 {{ font-size: 14pt; color: #16213e; border-bottom: 1.5px solid #ddd; padding-
 .msg.p .who {{ color: #047857; }}
 .who .ts {{ font-weight: normal; color: #999; margin-left: 6px; }}
 .txt {{ font-size: 10pt; }}
-.cleaned {{ background: #fafafa; border: 1px solid #e5e5e5; border-radius: 8px; padding: 12px 14px; font-size: 9.5pt; line-height: 1.8; }}
+.cleaned {{ margin-top: 8px; }}
+.cleaned .note {{ color: #666; font-size: 9pt; margin: 6px 0; }}
+.plainline {{ color: #555; font-size: 9.5pt; margin: 4px 8%; text-align: center; }}
 .card {{ border: 1px solid #dbe4f0; border-radius: 10px; background: #f8fafc; padding: 14px 16px; }}
 .card h3 {{ font-size: 11pt; color: #1d4ed8; margin: 10px 0 4px; }}
 .card h3:first-child {{ margin-top: 0; }}
@@ -106,12 +125,12 @@ ul {{ margin: 4px 0; padding-left: 20px; }}
 链路：上传 → paraformer-v2 转写（说话人分离） → {bi.get('model')} 清理（prompt {bi.get('prompt_version')}） → {bi.get('model')} 记录生成 · 会话 #{session_id} · {datetime.now().strftime('%Y-%m-%d')}</p>
 <h2>一、转写对话稿（{len(segs)} 段）</h2>
 <div class="dialog">{''.join(bubbles)}</div>
-<h2>二、清理后文本</h2>
-<div class="cleaned">{cleaned_html}</div>
+<h2>二、清理后文本（已去口语化，角色分栏）</h2>
+<div class="cleaned"><p class="note">以下为 LLM 清理产出：去除语气词与重复，保留语义与说话人归属</p>{''.join(cleaned_bubbles)}</div>
 <h2>三、记录卡片</h2>
 <div class="card">
-<h3>概述</h3><p>{record['summary']}</p>
-<h3>咨询师的工作</h3><p>{record['therapist_work']}</p>
+<h3>概述</h3><p>{_summary}</p>
+<h3>咨询师的工作</h3><p>{_work}</p>
 <h3>来访者话题</h3><ul>{topics}</ul>
 <h3>元信息</h3><p class="meta">模型：{bi.get('model')} · 提示词版本：{bi.get('prompt_version')} · 会话编号：#{session_id}</p>
 </div>
