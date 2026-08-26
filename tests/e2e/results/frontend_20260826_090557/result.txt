@@ -1,0 +1,7 @@
+PASS
+timestamp: 20260826_090557
+backend_port: 8660
+frontend_port: 5199
+page_has_disclaimer: yes
+api_health_via_frontend: yes
+health_response: {"status":"ok","app":"psy-backend","env":"dev"}
