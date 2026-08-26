@@ -10,6 +10,7 @@ from .config import Settings, get_settings
 from .db import build_engine, create_session_factory, init_db
 from .logging_conf import setup_logging
 from .response import register_exception_handlers
+from .routes import router as sessions_router
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -31,6 +32,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.session_factory = session_factory
 
     register_exception_handlers(application)
+    application.include_router(sessions_router)
 
     @application.get("/health")
     def health() -> dict[str, str]:
