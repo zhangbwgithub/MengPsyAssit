@@ -73,8 +73,13 @@ def get_segments(db, session_id: int) -> list[Segment]:
 
 
 def build_transcript_lines_from_segments(segments: list[Segment]) -> str:
-    """把 segments 列表拼成逐行转写稿：`A: 文本` / `B: 文本`（代号，供 clean prompt 输入）。"""
-    return "\n".join(f"{seg.speaker}: {seg.content}" for seg in segments)
+    """把 segments 列表拼成逐行转写稿：`[seq] 代号: 文本`（供 clean prompt 输入）。
+
+    T-S1.4：显式带 seq，LLM 直接引用方括号内编号作 source_seqs，
+    不再数行号（长转写下模型多数/漏数一个号导致 source_seqs 覆盖校验失败）。
+    分块路径每块内也用 seg.seq（全局 seq），与输出 source_seqs 的全局口径一致。
+    """
+    return "\n".join(f"[{seg.seq}] {seg.speaker}: {seg.content}" for seg in segments)
 
 
 def build_cleaned_text(db, session_id: int) -> str:

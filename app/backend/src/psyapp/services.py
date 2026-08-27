@@ -116,7 +116,7 @@ def _clean_transcript(db, session_id: int, job, settings: Settings, clean_llm: A
     - 清理前把原始转写稿写入 sessions.raw_transcript（审计底稿，失败也保留）。
     - ≤60 段单次调用（现状路径）；>60 段分块（每块 ≤50 段、按说话人轮换边界切）。
     - 每块独立调用 clean v3 并校验；角色以首次出现块的判定为准；
-      paragraphs 顺序拼接、source_seqs 映射回全局 seq。
+      输入每块带全局 seq 编号（T-S1.4），模型逐字引用，source_seqs 直接拼接到全局。
     - 任一块重试 1 次后仍失败 → 整个 clean 失败（job.error 记原因，返回 None）。
     - 成功时用重组后的 paragraphs 替换 segments，并返回 cleaned_text 供 record 阶段。
     """
@@ -136,7 +136,7 @@ def _clean_transcript(db, session_id: int, job, settings: Settings, clean_llm: A
     merged_paragraphs: list[dict[str, Any]] = []
 
     try:
-        for chunk_start, chunk_segments in chunks:
+        for _chunk_start, chunk_segments in chunks:
             transcript = build_transcript_lines_from_segments(chunk_segments)
             roles, paragraphs = _clean_chunk_with_retry(
                 db, job, settings, clean_llm, transcript, chunk_segments
@@ -149,7 +149,8 @@ def _clean_transcript(db, session_id: int, job, settings: Settings, clean_llm: A
                 merged_paragraphs.append(
                     {
                         "speaker": para["speaker"],
-                        "source_seqs": [seq + chunk_start for seq in para["source_seqs"]],
+                        # T-S1.4：输入显式带全局 seq，模型直接引用；不再做 +chunk_start 偏移
+                        "source_seqs": list(para["source_seqs"]),
                         "text": para["text"],
                     }
                 )
@@ -264,7 +265,9 @@ def validate_clean_result(
 
     - roles 键覆盖输入中出现过的全部代号，role ∈ {T, P}，label 非空字符串；
     - 每个 paragraph 的 speaker 是已知代号、text 为非空字符串；
-    - 所有 source_seqs 拼接后必须恰好等于 [0, 1, ..., n-1]（不重不漏、顺序不减）。
+    - 所有 source_seqs 拼接后必须恰好等于输入段的 seq 序列 [seg.seq, …, seg.seq]
+      （不重不漏、顺序不减）。T-S1.4：分块输入显式带全局 seq，故以 seg.seq 为准，
+      不再假设从 0 连续——但严格覆盖校验本身不变。
     """
     roles = data["roles"]
     paragraphs = data["paragraphs"]
@@ -303,7 +306,7 @@ def validate_clean_result(
             raise ValueError(f"paragraphs[{idx}].text 缺失或非字符串")
         flat_seqs.extend(source_seqs)
 
-    expected = list(range(len(segments)))
+    expected = [seg.seq for seg in segments]
     if flat_seqs != expected:
         raise ValueError(
             f"source_seqs 未覆盖全部输入段落（期望 {expected}，实际 {flat_seqs}）"
@@ -319,7 +322,7 @@ def _replace_segments_with_paragraphs(
 ) -> None:
     """用重组后的 paragraphs 替换旧 segments（清空旧段后重建）。
 
-    - 写入前再次做全局校验（roles 覆盖、source_seqs 恰好覆盖 0..n-1）；
+    - 写入前再次做全局校验（roles 覆盖、source_seqs 恰好覆盖全部段 seq）；
     - 新段 seq 重排为 0..m-1，speaker/role/role_label/cleaned_content 来自 paragraph；
     - start_ms/end_ms 取 source_seqs 首/末段的时间戳；
     - content 保留 source_seqs 对应的原始文本（换行拼接），便于追溯。
