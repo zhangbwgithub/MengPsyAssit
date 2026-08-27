@@ -6,6 +6,8 @@
   每行独立记录 provider 与状态/错误，便于故障定位与追溯。
 - 清理阶段（T-S1.3 起）按语义重拼段落：≤60 段单次调用，>60 段分块调用；
   每块独立判定角色，坏 JSON/校验失败重试 1 次，任一块仍失败则整体失败。
+  T-S1.5 起 clean 阶段走 clean_llm_provider（默认 deepseek）+ clean prompt v4；
+  T-S1.5b 起 record 阶段走 record_llm_provider（默认 deepseek），record prompt v2 不变。
 - 会话状态机最小版：uploading（创建即写）→ transcribing（后台开始）→ done/failed。
   失败时对应 job.error 记原因；会话可重交（复用 POST /sessions，幂等清空旧 segments）。
 """
@@ -45,6 +47,8 @@ def run_background_pipeline(
     asr: Any,
     clean_llm: Any,
     record_llm: Any,
+    *,
+    record_settings: Settings | None = None,
 ) -> None:
     """S0 主链路后台任务：转写 → segments 落库 → 清理+角色判定 → 记录生成。
 
@@ -52,7 +56,11 @@ def run_background_pipeline(
     任一阶段异常都捕获 → session.status=failed，对应 job.error 记原因。
 
     asr/clean_llm/record_llm 为 provider 实例；测试可传 fake，生产由工厂创建。
+    record_settings：record 阶段独立模型设置（T-S1.5b，deepseek），用于 store_record
+    如实落库 provider/model；缺省时回退为全局 settings（旧调用方/直连测试）。
     """
+    if record_settings is None:
+        record_settings = settings
     db = session_factory()
 
     # ── 转写 ──────────────────────────────────────────────────
@@ -91,7 +99,7 @@ def run_background_pipeline(
     record_job = add_job(db, session_id, JobType.RECORD, record_llm.name)
     db.commit()
     record_data = _generate_record(
-        db, session_id, record_job, settings, cleaned_text, record_llm
+        db, session_id, record_job, record_settings, cleaned_text, record_llm
     )
     if record_data is None:
         _set_session_status(db, session_id, SessionStatus.FAILED)
@@ -115,7 +123,7 @@ def _clean_transcript(db, session_id: int, job, settings: Settings, clean_llm: A
 
     - 清理前把原始转写稿写入 sessions.raw_transcript（审计底稿，失败也保留）。
     - ≤60 段单次调用（现状路径）；>60 段分块（每块 ≤50 段、按说话人轮换边界切）。
-    - 每块独立调用 clean v3 并校验；角色以首次出现块的判定为准；
+    - 每块独立调用 clean v4 并校验；角色以首次出现块的判定为准；
       输入每块带全局 seq 编号（T-S1.4），模型逐字引用，source_seqs 直接拼接到全局。
     - 任一块重试 1 次后仍失败 → 整个 clean 失败（job.error 记原因，返回 None）。
     - 成功时用重组后的 paragraphs 替换 segments，并返回 cleaned_text 供 record 阶段。
@@ -174,7 +182,7 @@ def _clean_chunk_with_retry(
     transcript: str,
     chunk_segments: list[Segment],
 ) -> tuple[dict[str, dict[str, str]], list[dict[str, Any]]]:
-    """单个分块调用 clean v3，坏 JSON/校验失败重试 1 次；仍失败抛 ValueError。"""
+    """单个分块调用 clean v4，坏 JSON/校验失败重试 1 次；仍失败抛 ValueError。"""
     prompt = render_prompt("clean", settings=settings, transcript=transcript)
     last_error: str | None = None
     for attempt in (1, 2):
@@ -233,7 +241,7 @@ def _split_clean_chunks(segments: list[Segment]) -> list[tuple[int, list[Segment
 
 
 def parse_clean_json(text: str) -> dict[str, Any]:
-    """解析 clean v3 的 JSON（roles + paragraphs）。
+    """解析 clean v4 的 JSON（roles + paragraphs）。
 
     可剥 ```json 围栏；顶层必须是对象，且含 roles（dict）与 paragraphs（list）。
     角色值/代号覆盖/source_seqs 覆盖的校验在 validate_clean_result 里做。
@@ -261,7 +269,7 @@ def parse_clean_json(text: str) -> dict[str, Any]:
 def validate_clean_result(
     data: dict[str, Any], segments: list[Segment]
 ) -> tuple[dict[str, dict[str, str]], list[dict[str, Any]]]:
-    """校验 clean v3 契约（raise 即视为该次尝试失败），返回 (roles, paragraphs)。
+    """校验 clean v4 契约（raise 即视为该次尝试失败），返回 (roles, paragraphs)。
 
     - roles 键覆盖输入中出现过的全部代号，role ∈ {T, P}，label 非空字符串；
     - 每个 paragraph 的 speaker 是已知代号、text 为非空字符串；
@@ -420,7 +428,8 @@ def store_record(db, session_id: int, settings: Settings, data: dict[str, Any]) 
         basic_info={
             "provider": settings.llm_provider,
             "model": settings.llm_model,
-            "prompt_version": "v2",
+            # 语义：clean prompt 版本（前端/示例脚本按此展示「清理提示词版本」）；record prompt 仍为 v2。
+            "prompt_version": "v4",
             "session_id": session_id,
             "client_reported_topics": data["client_reported_topics"],
         },

@@ -140,4 +140,15 @@
 
 ---
 
+## FB-006 · 2026-08-28 · record 阶段也试一下 deepseek-v4-flash
+
+### 反馈：陛下追加口头指令（T-S1.5 验收期间）
+
+**结论：✅ 采纳，追加卡 T-S1.5b（同分支增量），record 阶段也切 deepseek-v4-flash**
+
+- T-S1.5 原定 record 维持 MIMO（T-S0.6 决策），陛下现明确放开：record 也可试新模型。
+- 落实：`record_llm_provider` 独立配置，默认 deepseek；record prompt（v2）不动；验收同 T-S1.5（真实音频重跑 + 耗时对比）。
+
+---
+
 <!-- 新反馈从这里往上追加，格式参照 FB-001 -->
