@@ -72,9 +72,9 @@ def get_segments(db, session_id: int) -> list[Segment]:
     )
 
 
-def build_transcript_lines(db, session_id: int) -> str:
-    """segments 拼成逐行转写稿：`A: 文本` / `B: 文本`（代号，供 clean prompt 输入）。"""
-    return "\n".join(f"{seg.speaker}: {seg.content}" for seg in get_segments(db, session_id))
+def build_transcript_lines_from_segments(segments: list[Segment]) -> str:
+    """把 segments 列表拼成逐行转写稿：`A: 文本` / `B: 文本`（代号，供 clean prompt 输入）。"""
+    return "\n".join(f"{seg.speaker}: {seg.content}" for seg in segments)
 
 
 def build_cleaned_text(db, session_id: int) -> str:

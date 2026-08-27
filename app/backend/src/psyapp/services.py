@@ -4,7 +4,8 @@
 - 后台执行：FastAPI BackgroundTasks 跑一个任务函数串行执行三段；不引队列中间件。
 - jobs 表记录形态：每个会话三个阶段各一行（type=transcribe/clean/record），
   每行独立记录 provider 与状态/错误，便于故障定位与追溯。
-- 清理/记录均为一次整体调用；LLM 返回坏 JSON 重试 1 次，仍失败标 failed。
+- 清理阶段（T-S1.3 起）按语义重拼段落：≤60 段单次调用，>60 段分块调用；
+  每块独立判定角色，坏 JSON/校验失败重试 1 次，任一块仍失败则整体失败。
 - 会话状态机最小版：uploading（创建即写）→ transcribing（后台开始）→ done/failed。
   失败时对应 job.error 记原因；会话可重交（复用 POST /sessions，幂等清空旧 segments）。
 """
@@ -19,16 +20,21 @@ from typing import Any
 from .config import Settings
 from .enums import JobType, Role, SessionStatus
 from .jobs import add_job, mark_job_done, mark_job_failed, mark_job_running
-from .models import Record, Session
+from .models import Record, Segment, Session
 from .prompts import render_prompt
 from .segments import (
     apply_segments_to_session,
     build_cleaned_text,
-    build_transcript_lines,
+    build_transcript_lines_from_segments,
+    clear_segments,
     get_segments,
 )
 
 logger = logging.getLogger(__name__)
+
+# T-S1.3 分块阈值：≤60 段走单次调用（现状路径），>60 段分块，每块 ≤50 段。
+CLEAN_SINGLE_CALL_LIMIT = 60
+CLEAN_CHUNK_SIZE = 50
 
 
 def run_background_pipeline(
@@ -105,15 +111,69 @@ def _set_session_status(db, session_id: int, status: str) -> None:
 
 
 def _clean_transcript(db, session_id: int, job, settings: Settings, clean_llm: Any) -> str | None:
-    """口语清理 + 角色判定：一次整体调用。失败重试 1 次；仍失败记 job.error 返回 None。
+    """口语清理 + 角色判定 + 语义重拼。
 
-    成功时把 roles.role/role_label 与 cleaned.text 写回 segments，
-    并返回带角色标签的 cleaned_text（供 record 阶段与调试）。
+    - 清理前把原始转写稿写入 sessions.raw_transcript（审计底稿，失败也保留）。
+    - ≤60 段单次调用（现状路径）；>60 段分块（每块 ≤50 段、按说话人轮换边界切）。
+    - 每块独立调用 clean v3 并校验；角色以首次出现块的判定为准；
+      paragraphs 顺序拼接、source_seqs 映射回全局 seq。
+    - 任一块重试 1 次后仍失败 → 整个 clean 失败（job.error 记原因，返回 None）。
+    - 成功时用重组后的 paragraphs 替换 segments，并返回 cleaned_text 供 record 阶段。
     """
-    transcript = build_transcript_lines(db, session_id)
-    if not transcript:
+    segments = get_segments(db, session_id)
+    if not segments:
         mark_job_failed(db, job.id, "清理输入为空：没有可清理的转写文本")
         return None
+
+    # 审计底稿：清理前的原始转写稿先落库（后续 clean 失败也不丢）
+    session = db.get(Session, session_id)
+    if session is not None:
+        session.raw_transcript = build_transcript_lines_from_segments(segments)
+        db.commit()
+
+    chunks = _split_clean_chunks(segments)
+    merged_roles: dict[str, dict[str, str]] = {}
+    merged_paragraphs: list[dict[str, Any]] = []
+
+    try:
+        for chunk_start, chunk_segments in chunks:
+            transcript = build_transcript_lines_from_segments(chunk_segments)
+            roles, paragraphs = _clean_chunk_with_retry(
+                db, job, settings, clean_llm, transcript, chunk_segments
+            )
+            # 角色冲突时以首次出现块的判定为准
+            for code, info in roles.items():
+                if code not in merged_roles:
+                    merged_roles[code] = info
+            for para in paragraphs:
+                merged_paragraphs.append(
+                    {
+                        "speaker": para["speaker"],
+                        "source_seqs": [seq + chunk_start for seq in para["source_seqs"]],
+                        "text": para["text"],
+                    }
+                )
+
+        _replace_segments_with_paragraphs(db, session_id, merged_roles, merged_paragraphs)
+        mark_job_done(db, job.id)
+        return build_cleaned_text(db, session_id)
+    except Exception as exc:  # noqa: BLE001
+        message = str(exc)
+        if "清理失败" not in message:
+            message = f"清理失败: {message}"
+        mark_job_failed(db, job.id, message)
+        return None
+
+
+def _clean_chunk_with_retry(
+    db,
+    job,
+    settings: Settings,
+    clean_llm: Any,
+    transcript: str,
+    chunk_segments: list[Segment],
+) -> tuple[dict[str, dict[str, str]], list[dict[str, Any]]]:
+    """单个分块调用 clean v3，坏 JSON/校验失败重试 1 次；仍失败抛 ValueError。"""
     prompt = render_prompt("clean", settings=settings, transcript=transcript)
     last_error: str | None = None
     for attempt in (1, 2):
@@ -123,21 +183,59 @@ def _clean_transcript(db, session_id: int, job, settings: Settings, clean_llm: A
                 [{"role": "user", "content": prompt}], temperature=0.3
             )
             data = parse_clean_json(text)
-            _apply_clean_result(db, session_id, data)
-            mark_job_done(db, job.id)
-            return build_cleaned_text(db, session_id)
+            return validate_clean_result(data, chunk_segments)
         except Exception as exc:  # noqa: BLE001
             last_error = f"{type(exc).__name__}: {exc}"
-            logger.warning("会话 %s 清理失败（第 %d 次）: %s", session_id, attempt, exc)
-    mark_job_failed(db, job.id, f"清理失败（重试后仍失败）: {last_error}")
-    return None
+            logger.warning(
+                "会话 %s 清理失败（第 %d 次）: %s", job.session_id, attempt, exc
+            )
+    raise ValueError(f"清理失败（重试后仍失败）: {last_error}")
+
+
+def _split_clean_chunks(segments: list[Segment]) -> list[tuple[int, list[Segment]]]:
+    """按阈值切分待清理 segments。
+
+    - ≤60 段：单块（现状路径）。
+    - >60 段：每块 ≤50 段；优先在说话人轮换边界（连续同人 run 之间）切块，
+      连续同人超过 50 段时硬切。
+    返回 [(chunk_start_seq, chunk_segments), ...]，chunk_start_seq 为全局起始 seq。
+    """
+    if len(segments) <= CLEAN_SINGLE_CALL_LIMIT:
+        return [(segments[0].seq, segments)]
+
+    runs: list[list[Segment]] = []
+    for seg in segments:
+        if not runs or runs[-1][-1].speaker != seg.speaker:
+            runs.append([seg])
+        else:
+            runs[-1].append(seg)
+
+    chunks: list[list[Segment]] = []
+    current: list[Segment] = []
+    for run in runs:
+        if len(run) > CLEAN_CHUNK_SIZE:
+            if current:
+                chunks.append(current)
+                current = []
+            # 硬切：同一人连续发言超过 50 段
+            for i in range(0, len(run), CLEAN_CHUNK_SIZE):
+                chunks.append(run[i : i + CLEAN_CHUNK_SIZE])
+        elif not current or len(current) + len(run) <= CLEAN_CHUNK_SIZE:
+            current.extend(run)
+        else:
+            chunks.append(current)
+            current = list(run)
+    if current:
+        chunks.append(current)
+
+    return [(chunk[0].seq, chunk) for chunk in chunks]
 
 
 def parse_clean_json(text: str) -> dict[str, Any]:
-    """解析 clean v2 的 JSON（角色 + 逐段清理文本）。
+    """解析 clean v3 的 JSON（roles + paragraphs）。
 
-    可剥 ```json 围栏；顶层必须是对象，且含 roles（dict）与 cleaned（list）。
-    角色值/代号覆盖/seq 对齐的校验在 _apply_clean_result 里结合落库数据做。
+    可剥 ```json 围栏；顶层必须是对象，且含 roles（dict）与 paragraphs（list）。
+    角色值/代号覆盖/source_seqs 覆盖的校验在 validate_clean_result 里做。
     """
     text = text.strip()
     if text.startswith("```"):
@@ -151,24 +249,25 @@ def parse_clean_json(text: str) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError(f"JSON 顶层不是对象: {text[:200]}")
     roles = data.get("roles")
-    cleaned = data.get("cleaned")
+    paragraphs = data.get("paragraphs")
     if not isinstance(roles, dict) or not roles:
         raise ValueError("roles 缺失或非对象")
-    if not isinstance(cleaned, list):
-        raise ValueError("cleaned 缺失或非数组")
+    if not isinstance(paragraphs, list):
+        raise ValueError("paragraphs 缺失或非数组")
     return data
 
 
-def _apply_clean_result(db, session_id: int, data: dict[str, Any]) -> None:
-    """把 clean 结果写回 segments 并做严格校验（raise 即视为该次尝试失败）。
+def validate_clean_result(
+    data: dict[str, Any], segments: list[Segment]
+) -> tuple[dict[str, dict[str, str]], list[dict[str, Any]]]:
+    """校验 clean v3 契约（raise 即视为该次尝试失败），返回 (roles, paragraphs)。
 
-    - roles 键必须覆盖输入中出现过的全部代号，role ∈ {T, P}；
-    - cleaned 与 segments 逐段对应（seq 为 0..n-1 且每段 text 为字符串）；
-    - text 允许为空字符串：纯语气词段（如整段只有"嗯……"）回退保留原 content，
-      避免因模型按规则清成空串而让整次清理失败（FB-002 根因修复）。
+    - roles 键覆盖输入中出现过的全部代号，role ∈ {T, P}，label 非空字符串；
+    - 每个 paragraph 的 speaker 是已知代号、text 为非空字符串；
+    - 所有 source_seqs 拼接后必须恰好等于 [0, 1, ..., n-1]（不重不漏、顺序不减）。
     """
-    segments = get_segments(db, session_id)
     roles = data["roles"]
+    paragraphs = data["paragraphs"]
     codes_seen = {seg.speaker for seg in segments}
     if not codes_seen <= set(roles):
         missing = sorted(codes_seen - set(roles))
@@ -183,27 +282,78 @@ def _apply_clean_result(db, session_id: int, data: dict[str, Any]) -> None:
         if not isinstance(label, str) or not label:
             raise ValueError(f"roles[{code!r}].label 缺失或非字符串")
 
-    cleaned = data["cleaned"]
-    if len(cleaned) != len(segments) or [item.get("seq") for item in cleaned] != list(
-        range(len(segments))
-    ):
-        got = [item.get("seq") for item in cleaned if isinstance(item, dict)]
-        raise ValueError(f"cleaned seq 未与 segments 对齐（段数 {len(segments)}）: {got}")
-    for idx, seg in enumerate(segments):
-        item = cleaned[idx]
-        if not isinstance(item, dict):
-            raise ValueError(f"cleaned[{idx}] 不是对象")
-        text = item.get("text")
-        if not isinstance(text, str):
-            raise ValueError(f"cleaned[{idx}].text 缺失或非字符串")
+    flat_seqs: list[int] = []
+    for idx, para in enumerate(paragraphs):
+        if not isinstance(para, dict):
+            raise ValueError(f"paragraphs[{idx}] 不是对象")
+        speaker = para.get("speaker")
+        source_seqs = para.get("source_seqs")
+        text = para.get("text")
+        if not isinstance(speaker, str) or not speaker:
+            raise ValueError(f"paragraphs[{idx}].speaker 缺失或非字符串")
+        if speaker not in roles:
+            raise ValueError(f"paragraphs[{idx}].speaker 未知代号: {speaker!r}")
+        if (
+            not isinstance(source_seqs, list)
+            or not source_seqs
+            or not all(isinstance(seq, int) and not isinstance(seq, bool) for seq in source_seqs)
+        ):
+            raise ValueError(f"paragraphs[{idx}].source_seqs 缺失或非法")
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError(f"paragraphs[{idx}].text 缺失或非字符串")
+        flat_seqs.extend(source_seqs)
 
-    for idx, seg in enumerate(segments):
-        code_info = roles[seg.speaker]
-        seg.role = code_info["role"]
-        seg.role_label = code_info["label"]
-        # 空串容错：纯语气词段保留原始 content，不再抛错导致重试
-        cleaned_text = cleaned[idx]["text"]
-        seg.cleaned_content = cleaned_text if cleaned_text else seg.content
+    expected = list(range(len(segments)))
+    if flat_seqs != expected:
+        raise ValueError(
+            f"source_seqs 未覆盖全部输入段落（期望 {expected}，实际 {flat_seqs}）"
+        )
+    return roles, paragraphs
+
+
+def _replace_segments_with_paragraphs(
+    db,
+    session_id: int,
+    roles: dict[str, dict[str, str]],
+    paragraphs: list[dict[str, Any]],
+) -> None:
+    """用重组后的 paragraphs 替换旧 segments（清空旧段后重建）。
+
+    - 写入前再次做全局校验（roles 覆盖、source_seqs 恰好覆盖 0..n-1）；
+    - 新段 seq 重排为 0..m-1，speaker/role/role_label/cleaned_content 来自 paragraph；
+    - start_ms/end_ms 取 source_seqs 首/末段的时间戳；
+    - content 保留 source_seqs 对应的原始文本（换行拼接），便于追溯。
+    """
+    segments = get_segments(db, session_id)
+    if not segments:
+        raise ValueError("无原始 segments 可重组")
+    validate_clean_result({"roles": roles, "paragraphs": paragraphs}, segments)
+
+    by_seq = {seg.seq: seg for seg in segments}
+    user_id = segments[0].user_id
+    clear_segments(db, session_id)
+    for seq, para in enumerate(paragraphs):
+        source_seqs = para["source_seqs"]
+        first = by_seq[source_seqs[0]]
+        last = by_seq[source_seqs[-1]]
+        code_info = roles[para["speaker"]]
+        db.add(
+            Segment(
+                session_id=session_id,
+                user_id=user_id,
+                seq=seq,
+                speaker=para["speaker"],
+                role=code_info["role"],
+                role_label=code_info["label"],
+                cleaned_content=para["text"],
+                source="asr",
+                content="\n".join(by_seq[seq_no].content for seq_no in source_seqs),
+                start_ms=first.start_ms,
+                end_ms=last.end_ms,
+                confidence=None,
+            )
+        )
+    db.flush()
     db.commit()
 
 

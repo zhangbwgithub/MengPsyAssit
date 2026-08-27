@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import json
 
+import pytest
 
 from psyapp import audio as audio_mod
 from psyapp.enums import SessionStatus
-from psyapp.models import Job, Record, Segment
+from psyapp.models import Job, Record, Segment, Session
 from psyapp.providers.base import Segment as AsrSegment
 from psyapp.providers.base import TranscriptResult
 
@@ -56,10 +57,17 @@ class FakeRecordLLM:
         return self.responses[min(self.calls - 1, len(self.responses) - 1)]
 
 
-def clean_json(roles, cleaned, *, fenced=False):
-    """构造 clean v2 契约的 JSON（可加 ```json 围栏）。"""
-    payload = json.dumps({"roles": roles, "cleaned": cleaned}, ensure_ascii=False)
+def clean_json(roles, paragraphs, *, fenced=False):
+    """构造 clean v3 契约的 JSON（可加 ```json 围栏）。"""
+    payload = json.dumps({"roles": roles, "paragraphs": paragraphs}, ensure_ascii=False)
     return f"```json\n{payload}\n```" if fenced else payload
+
+
+def para(speaker, seqs, text):
+    """构造单个 paragraph；seqs 传 int 自动包成单段 [seq]。"""
+    if isinstance(seqs, int):
+        seqs = [seqs]
+    return {"speaker": speaker, "source_seqs": seqs, "text": text}
 
 
 GOOD_CLEAN = clean_json(
@@ -67,11 +75,11 @@ GOOD_CLEAN = clean_json(
         "A": {"role": "T", "label": "咨询师"},
         "B": {"role": "P", "label": "来访者"},
     },
-    cleaned=[
-        {"seq": 0, "text": "你好，最近感觉怎么样？"},
-        {"seq": 1, "text": "最近睡眠不太好。"},
-        {"seq": 2, "text": "能具体说说吗？"},
-        {"seq": 3, "text": "就是工作压力大，晚上睡不着。"},
+    paragraphs=[
+        para("A", 0, "你好，最近感觉怎么样？"),
+        para("B", 1, "最近睡眠不太好。"),
+        para("A", 2, "能具体说说吗？"),
+        para("B", 3, "就是工作压力大，晚上睡不着。"),
     ],
 )
 
@@ -136,6 +144,13 @@ def test_upload_full_chain_creates_segments_clean_and_record(client, monkeypatch
     db = factory()
     try:
         assert db.query(Segment).filter(Segment.session_id == session_id).count() == 4
+        session = db.get(Session, session_id)
+        assert session.raw_transcript == (
+            "A: 你好，最近感觉怎么样？\n"
+            "B: 最近睡眠不太好。\n"
+            "A: 能具体说说吗？\n"
+            "B: 就是工作压力大，晚上睡不着。"
+        )
         rec = db.query(Record).filter(Record.session_id == session_id).one()
         assert rec.basic_info["provider"] == "mimo"
         assert rec.basic_info["model"] == "mimo-v2.5-pro"
@@ -192,11 +207,11 @@ def test_three_speaker_role_assignment(client, monkeypatch):
             "B": {"role": "P", "label": "来访者"},
             "C": {"role": "T", "label": "咨询师B"},
         },
-        cleaned=[
-            {"seq": 0, "text": "你好，今天想聊些什么？"},
-            {"seq": 1, "text": "我和妈妈吵架了。"},
-            {"seq": 2, "text": "听起来你有些委屈。"},
-            {"seq": 3, "text": "对，我心里堵得慌。"},
+        paragraphs=[
+            para("A", 0, "你好，今天想聊些什么？"),
+            para("B", 1, "我和妈妈吵架了。"),
+            para("C", 2, "听起来你有些委屈。"),
+            para("B", 3, "对，我心里堵得慌。"),
         ],
     )
     monkeypatch.setattr("psyapp.routes.get_asr_provider", lambda s: ThreeSpeakerASR())
@@ -217,16 +232,16 @@ def test_three_speaker_role_assignment(client, monkeypatch):
     assert all(seg["cleaned_content"] for seg in detail["segments"])
 
 
-def test_clean_empty_text_falls_back_to_original_content(client, monkeypatch):
-    """纯语气词段被清理成空串时不失败，该段回退保留原 content（FB-002 根因修复）。"""
+def test_clean_pure_filler_segment_merges_into_neighbor(client, monkeypatch):
+    """纯语气词段在 v3 语义重拼下并入相邻同人段落，不产生空串（FB-002 演进）。"""
     class FillerASR(FakeASR):
         def transcribe(self, audio_path, *, speaker_hint=None):
             return TranscriptResult(
                 segments=[
                     AsrSegment(0, "0", "你好，最近感觉怎么样？", 100, 2000, None),
                     AsrSegment(1, "1", "嗯……", 2200, 4000, None),
-                    AsrSegment(2, "0", "能具体说说吗？", 4300, 6000, None),
-                    AsrSegment(3, "1", "就是工作压力大，晚上睡不着。", 6400, 9000, None),
+                    AsrSegment(2, "1", "就是工作压力大，晚上睡不着。", 4300, 6000, None),
+                    AsrSegment(3, "0", "能具体说说吗？", 6400, 9000, None),
                 ],
                 raw={},
             )
@@ -236,11 +251,10 @@ def test_clean_empty_text_falls_back_to_original_content(client, monkeypatch):
             "A": {"role": "T", "label": "咨询师"},
             "B": {"role": "P", "label": "来访者"},
         },
-        cleaned=[
-            {"seq": 0, "text": "你好，最近感觉怎么样？"},
-            {"seq": 1, "text": ""},
-            {"seq": 2, "text": "能具体说说吗？"},
-            {"seq": 3, "text": "就是工作压力大，晚上睡不着。"},
+        paragraphs=[
+            para("A", 0, "你好，最近感觉怎么样？"),
+            para("B", [1, 2], "就是工作压力大，晚上睡不着。"),
+            para("A", 3, "能具体说说吗？"),
         ],
     )
     monkeypatch.setattr("psyapp.routes.get_asr_provider", lambda s: FillerASR())
@@ -253,9 +267,12 @@ def test_clean_empty_text_falls_back_to_original_content(client, monkeypatch):
 
     assert detail["status"] == SessionStatus.DONE
     segs = detail["segments"]
-    assert len(segs) == 4
-    assert segs[1]["content"] == "嗯……"
-    assert segs[1]["cleaned_content"] == "嗯……"
+    assert len(segs) == 3
+    assert segs[1]["speaker"] == "B"
+    assert segs[1]["cleaned_content"] == "就是工作压力大，晚上睡不着。"
+    # start_ms/end_ms 取 source_seqs 首/末段（seq1 开头、seq2 结尾）
+    assert segs[1]["start_ms"] == 2200
+    assert segs[1]["end_ms"] == 6000
     assert segs[1]["role"] == "P"
     assert segs[1]["role_label"] == "来访者"
     assert all(seg["cleaned_content"] for seg in segs)
@@ -333,6 +350,14 @@ def test_clean_bad_json_retries_then_failed(client, monkeypatch):
     factory = create_session_factory(client.app.state.engine)
     db = factory()
     try:
+        # 审计底稿：即使 clean 失败，清理前的原始转写稿也已落库
+        session = db.get(Session, session_id)
+        assert session.raw_transcript == (
+            "A: 你好，最近感觉怎么样？\n"
+            "B: 最近睡眠不太好。\n"
+            "A: 能具体说说吗？\n"
+            "B: 就是工作压力大，晚上睡不着。"
+        )
         clean_job = (
             db.query(Job)
             .filter(Job.session_id == session_id, Job.type == "clean")
@@ -352,11 +377,11 @@ def test_clean_missing_speaker_code_retries_then_failed(client, monkeypatch):
     """roles 未覆盖全部代号 → 视为失败，重试后仍 failed。"""
     incomplete = clean_json(
         roles={"A": {"role": "T", "label": "咨询师"}},
-        cleaned=[
-            {"seq": 0, "text": "你好"},
-            {"seq": 1, "text": "最近不太好"},
-            {"seq": 2, "text": "能具体说说吗"},
-            {"seq": 3, "text": "工作压力大"},
+        paragraphs=[
+            para("A", 0, "你好"),
+            para("B", 1, "最近不太好"),
+            para("A", 2, "能具体说说吗"),
+            para("B", 3, "工作压力大"),
         ],
     )
     monkeypatch.setattr("psyapp.routes.get_asr_provider", lambda s: FakeASR())
@@ -543,3 +568,134 @@ def test_job_timestamps_written_on_running_and_done(client):
         assert job.finished_at is not None
     finally:
         db.close()
+
+
+# ── T-S1.3 语义重拼：碎片合并 / source_seqs 校验 / 分块 ─────────
+
+
+def test_clean_merges_same_speaker_fragments_into_one_paragraph(client, monkeypatch):
+    """3 个同人碎片（含「他→她」指代纠正场景）合并为 1 个 paragraph。"""
+    class FragmentASR(FakeASR):
+        def transcribe(self, audio_path, *, speaker_hint=None):
+            return TranscriptResult(
+                segments=[
+                    AsrSegment(0, "0", "你最近和妻子的关系怎么样？", 100, 2000, None),
+                    AsrSegment(1, "1", "他最近总是很晚回家。", 2200, 4000, None),
+                    AsrSegment(2, "1", "我们为这个吵了好几次。", 4300, 6000, None),
+                    AsrSegment(3, "1", "我心里很不踏实。", 6400, 9000, None),
+                    AsrSegment(4, "0", "听起来你挺担心这段关系。", 9300, 11000, None),
+                ],
+                raw={},
+            )
+
+    clean = clean_json(
+        roles={
+            "A": {"role": "T", "label": "咨询师"},
+            "B": {"role": "P", "label": "来访者"},
+        },
+        paragraphs=[
+            para("A", 0, "你最近和妻子的关系怎么样？"),
+            para("B", [1, 2, 3], "她最近总是很晚回家，我们为这个吵了好几次，我心里很不踏实。"),
+            para("A", 4, "听起来你挺担心这段关系。"),
+        ],
+    )
+    monkeypatch.setattr("psyapp.routes.get_asr_provider", lambda s: FragmentASR())
+    llms = iter([FakeCleanLLM([clean]), FakeRecordLLM([GOOD_RECORD])])
+    monkeypatch.setattr("psyapp.routes.get_llm_provider", lambda s: next(llms))
+
+    resp = client.post("/sessions", files={"file": ("x.wav", b"fake", "audio/wav")})
+    session_id = resp.json()["data"]["session_id"]
+    detail = client.get(f"/sessions/{session_id}").json()["data"]
+
+    assert detail["status"] == SessionStatus.DONE
+    segs = detail["segments"]
+    assert len(segs) == 3
+    assert segs[1]["speaker"] == "B"
+    assert segs[1]["cleaned_content"] == (
+        "她最近总是很晚回家，我们为这个吵了好几次，我心里很不踏实。"
+    )
+    # 合并段的时间戳取 source_seqs 首/末段
+    assert segs[1]["start_ms"] == 2200
+    assert segs[1]["end_ms"] == 9000
+    # 重组后 seq 从 0 连续重排
+    assert [seg["seq"] for seg in segs] == [0, 1, 2]
+
+
+def test_clean_source_seqs_missing_or_duplicate_rejected():
+    """source_seqs 拼接后必须恰好覆盖 0..n-1；缺段/重复都会校验失败。"""
+    from psyapp.services import validate_clean_result
+
+    segments = [Segment(speaker="A"), Segment(speaker="B"), Segment(speaker="B")]
+    roles = {
+        "A": {"role": "T", "label": "咨询师"},
+        "B": {"role": "P", "label": "来访者"},
+    }
+
+    missing = {
+        "roles": roles,
+        "paragraphs": [
+            para("A", 0, "你好"),
+            para("B", 1, "最近不太好"),
+        ],
+    }
+    with pytest.raises(ValueError, match="source_seqs"):
+        validate_clean_result(missing, segments)
+
+    duplicated = {
+        "roles": roles,
+        "paragraphs": [
+            para("A", [0, 1], "你好，最近不太好"),
+            para("B", 1, "重复段"),
+        ],
+    }
+    with pytest.raises(ValueError, match="source_seqs"):
+        validate_clean_result(duplicated, segments)
+
+
+def test_clean_chunks_over_60_segments_makes_multiple_calls(client, monkeypatch):
+    """61 段 → 分块：fake LLM 调用 ≥2 次，paragraphs 合并正确、seq 映射回全局。"""
+    class ManyASR(FakeASR):
+        def transcribe(self, audio_path, *, speaker_hint=None):
+            return TranscriptResult(
+                segments=[
+                    AsrSegment(i, str(i % 2), f"第{i}段内容", i * 100, i * 100 + 90, None)
+                    for i in range(61)
+                ],
+                raw={},
+            )
+
+    roles = {
+        "A": {"role": "T", "label": "咨询师"},
+        "B": {"role": "P", "label": "来访者"},
+    }
+
+    def chunk_clean(start, count):
+        paragraphs = []
+        for local in range(count):
+            global_seq = start + local
+            speaker = "A" if global_seq % 2 == 0 else "B"
+            paragraphs.append(para(speaker, local, f"第{global_seq}段内容"))
+        return clean_json(roles, paragraphs)
+
+    clean_llm = FakeCleanLLM([chunk_clean(0, 50), chunk_clean(50, 11)])
+    monkeypatch.setattr("psyapp.routes.get_asr_provider", lambda s: ManyASR())
+    llms = iter([clean_llm, FakeRecordLLM([GOOD_RECORD])])
+    monkeypatch.setattr("psyapp.routes.get_llm_provider", lambda s: next(llms))
+
+    resp = client.post("/sessions", files={"file": ("x.wav", b"fake", "audio/wav")})
+    session_id = resp.json()["data"]["session_id"]
+    detail = client.get(f"/sessions/{session_id}").json()["data"]
+
+    assert detail["status"] == SessionStatus.DONE
+    assert clean_llm.calls == 2
+    segs = detail["segments"]
+    assert len(segs) == 61
+    assert segs[0]["cleaned_content"] == "第0段内容"
+    assert segs[0]["start_ms"] == 0
+    assert segs[-1]["cleaned_content"] == "第60段内容"
+    assert segs[-1]["start_ms"] == 6000
+    assert segs[-1]["end_ms"] == 6090
+    assert segs[-1]["speaker"] == "A"
+    assert segs[-2]["speaker"] == "B"
+    # 角色以各块判定写回（每块独立判定后合并）
+    assert {seg["role"] for seg in segs} == {"T", "P"}

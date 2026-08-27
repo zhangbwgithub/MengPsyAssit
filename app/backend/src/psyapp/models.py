@@ -62,6 +62,8 @@ class Session(Base):
     duration_sec: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     audio_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     cleaned_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 审计底稿：清理前的原始转写稿（`代号: 文本` 逐行），T-S1.3 起持久化
+    raw_transcript: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class Segment(Base):

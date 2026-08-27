@@ -13,7 +13,7 @@ from .config import Settings
 from .response import ApiError
 
 _TEMPLATES = {
-    "clean": ("clean", "v2", "{{transcript}}"),
+    "clean": ("clean", "v3", "{{transcript}}"),
     "record": ("record", "v2", "{{cleaned_transcript}}"),
 }
 
