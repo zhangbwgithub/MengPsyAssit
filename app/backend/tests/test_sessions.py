@@ -144,6 +144,9 @@ def test_upload_full_chain_creates_segments_clean_and_record(client, monkeypatch
         job_types = {j.type for j in jobs}
         assert {"transcribe", "clean", "record"} <= job_types
         assert all(j.status == "done" for j in jobs)
+        # T-S1.2：jobs 可观测性时间戳均写入
+        assert all(j.started_at is not None for j in jobs)
+        assert all(j.finished_at is not None for j in jobs)
     finally:
         db.close()
 
@@ -212,6 +215,50 @@ def test_three_speaker_role_assignment(client, monkeypatch):
     assert roles == {"A": "T", "B": "P", "C": "T"}
     assert labels == {"A": "咨询师A", "B": "来访者", "C": "咨询师B"}
     assert all(seg["cleaned_content"] for seg in detail["segments"])
+
+
+def test_clean_empty_text_falls_back_to_original_content(client, monkeypatch):
+    """纯语气词段被清理成空串时不失败，该段回退保留原 content（FB-002 根因修复）。"""
+    class FillerASR(FakeASR):
+        def transcribe(self, audio_path, *, speaker_hint=None):
+            return TranscriptResult(
+                segments=[
+                    AsrSegment(0, "0", "你好，最近感觉怎么样？", 100, 2000, None),
+                    AsrSegment(1, "1", "嗯……", 2200, 4000, None),
+                    AsrSegment(2, "0", "能具体说说吗？", 4300, 6000, None),
+                    AsrSegment(3, "1", "就是工作压力大，晚上睡不着。", 6400, 9000, None),
+                ],
+                raw={},
+            )
+
+    clean = clean_json(
+        roles={
+            "A": {"role": "T", "label": "咨询师"},
+            "B": {"role": "P", "label": "来访者"},
+        },
+        cleaned=[
+            {"seq": 0, "text": "你好，最近感觉怎么样？"},
+            {"seq": 1, "text": ""},
+            {"seq": 2, "text": "能具体说说吗？"},
+            {"seq": 3, "text": "就是工作压力大，晚上睡不着。"},
+        ],
+    )
+    monkeypatch.setattr("psyapp.routes.get_asr_provider", lambda s: FillerASR())
+    llms = iter([FakeCleanLLM([clean]), FakeRecordLLM([GOOD_RECORD])])
+    monkeypatch.setattr("psyapp.routes.get_llm_provider", lambda s: next(llms))
+
+    resp = client.post("/sessions", files={"file": ("x.wav", b"fake", "audio/wav")})
+    session_id = resp.json()["data"]["session_id"]
+    detail = client.get(f"/sessions/{session_id}").json()["data"]
+
+    assert detail["status"] == SessionStatus.DONE
+    segs = detail["segments"]
+    assert len(segs) == 4
+    assert segs[1]["content"] == "嗯……"
+    assert segs[1]["cleaned_content"] == "嗯……"
+    assert segs[1]["role"] == "P"
+    assert segs[1]["role_label"] == "来访者"
+    assert all(seg["cleaned_content"] for seg in segs)
 
 
 # ── 失败路径 ──────────────────────────────────────────────────
@@ -294,6 +341,7 @@ def test_clean_bad_json_retries_then_failed(client, monkeypatch):
         assert clean_job.status == "failed"
         assert "清理失败" in clean_job.error
         assert clean_job.error.count("非 JSON") >= 1
+        assert clean_job.finished_at is not None
         # 两次尝试：坏 JSON 都失败才标 failed
         assert db.query(Job).filter(Job.session_id == session_id, Job.type == "record").count() == 0
     finally:
@@ -450,3 +498,48 @@ def test_pipeline_transition_marks_transcribing_then_done(client, monkeypatch):
         assert db2.get(SessionModel, session.id).status == SessionStatus.DONE
     finally:
         db2.close()
+
+
+def test_job_timestamps_written_on_running_and_done(client):
+    """mark_job_running 写 started_at，mark_job_done 写 finished_at（T-S1.2）。"""
+    from psyapp.db import create_session_factory
+    from psyapp.enums import JobStatus, JobType
+    from psyapp.jobs import add_job, mark_job_done, mark_job_running
+    from psyapp.models import Session as SessionModel
+
+    factory = create_session_factory(client.app.state.engine)
+    db = factory()
+    try:
+        session = SessionModel(
+            user_id=1,
+            mode="in_person",
+            status=SessionStatus.UPLOADING,
+            audio_path="data/audio/fake.wav",
+        )
+        db.add(session)
+        db.commit()
+        db.refresh(session)
+
+        job = add_job(db, session.id, JobType.TRANSCRIBE, "fake-asr")
+        db.commit()
+        assert job.started_at is None
+        assert job.finished_at is None
+
+        mark_job_running(db, job.id)
+        db.refresh(job)
+        assert job.status == JobStatus.RUNNING
+        assert job.started_at is not None
+        assert job.finished_at is None
+
+        # 重试场景：再次进入 running 不覆盖第一次的 started_at
+        first_started_at = job.started_at
+        mark_job_running(db, job.id)
+        db.refresh(job)
+        assert job.started_at == first_started_at
+
+        mark_job_done(db, job.id)
+        db.refresh(job)
+        assert job.status == JobStatus.DONE
+        assert job.finished_at is not None
+    finally:
+        db.close()

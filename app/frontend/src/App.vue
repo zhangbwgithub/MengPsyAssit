@@ -175,11 +175,18 @@ function labelOf(seg) {
   return `说话人 ${seg.speaker || '?'}`
 }
 
-// role=T 靠左、role=P 靠右、未判定居中
+// role=T 靠左、role=P 靠右；未判定按代号奇偶交替左右（A=0 左、B=1 右…）。
+// 未知代号 U 的字母序号 20 为偶数，自然靠左；非 A-Z 代号兜底按偶数靠左。
+function speakerIndex(speaker) {
+  const code = String(speaker || '').toUpperCase()
+  const idx = code.charCodeAt(0) - 65
+  return idx >= 0 && idx <= 25 ? idx : 0
+}
+
 function alignClassOf(seg) {
   if (seg.role === 'T') return 'align-left'
   if (seg.role === 'P') return 'align-right'
-  return 'align-center'
+  return speakerIndex(seg.speaker) % 2 === 0 ? 'align-left' : 'align-right'
 }
 
 const metaInfoText = computed(() => {
@@ -505,10 +512,6 @@ body {
 
 .segment.align-right {
   justify-content: flex-end;
-}
-
-.segment.align-center {
-  justify-content: center;
 }
 
 .bubble {
