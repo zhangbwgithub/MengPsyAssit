@@ -17,11 +17,16 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .config import Settings
-from .enums import JobType, SessionStatus
+from .enums import JobType, Role, SessionStatus
 from .jobs import add_job, mark_job_done, mark_job_failed, mark_job_running
 from .models import Record, Session
 from .prompts import render_prompt
-from .segments import apply_segments_to_session, build_transcript_lines
+from .segments import (
+    apply_segments_to_session,
+    build_cleaned_text,
+    build_transcript_lines,
+    get_segments,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -31,12 +36,11 @@ def run_background_pipeline(
     session_factory: Any,
     settings: Settings,
     audio_path: str,
-    speaker_zero: str,
     asr: Any,
     clean_llm: Any,
     record_llm: Any,
 ) -> None:
-    """S0 主链路后台任务：转写 → segments 落库 → 清理 → 记录生成。
+    """S0 主链路后台任务：转写 → segments 落库 → 清理+角色判定 → 记录生成。
 
     幂等：支持同一会话重交（失败/无 segments 时重跑，旧 segments 先清空）。
     任一阶段异常都捕获 → session.status=failed，对应 job.error 记原因。
@@ -54,9 +58,7 @@ def run_background_pipeline(
         if not result.segments:
             raise RuntimeError("ASR 返回 0 个分段")
         mark_job_running(db, transcribe_job.id)
-        apply_segments_to_session(
-            db, session_id, settings.dev_user_id, result.segments, speaker_zero
-        )
+        apply_segments_to_session(db, session_id, settings.dev_user_id, result.segments)
         db.commit()
         mark_job_done(db, transcribe_job.id)
     except Exception as exc:  # noqa: BLE001 —— 主链路任何失败都收敛为 failed
@@ -66,7 +68,7 @@ def run_background_pipeline(
         db.close()
         return
 
-    # ── 清理（一次整体调用，坏 JSON/异常重试 1 次）────────────
+    # ── 清理 + 角色判定（一次整体调用，坏 JSON/异常重试 1 次）────
     clean_job = add_job(db, session_id, JobType.CLEAN, clean_llm.name)
     db.commit()
     cleaned_text = _clean_transcript(db, session_id, clean_job, settings, clean_llm)
@@ -74,7 +76,10 @@ def run_background_pipeline(
         _set_session_status(db, session_id, SessionStatus.FAILED)
         db.close()
         return
-    _set_session_cleaned_text(db, session_id, cleaned_text)
+    session = db.get(Session, session_id)
+    if session is not None:
+        session.cleaned_text = cleaned_text
+    db.commit()
 
     # ── 记录（一次整体调用，坏 JSON 重试 1 次，成功落库）──────
     record_job = add_job(db, session_id, JobType.RECORD, record_llm.name)
@@ -99,38 +104,103 @@ def _set_session_status(db, session_id: int, status: str) -> None:
     db.commit()
 
 
-def _set_session_cleaned_text(db, session_id: int, text: str) -> None:
-    session = db.get(Session, session_id)
-    if session is None:
-        raise RuntimeError(f"会话不存在: {session_id}")
-    session.cleaned_text = text
-    db.commit()
-
-
 def _clean_transcript(db, session_id: int, job, settings: Settings, clean_llm: Any) -> str | None:
-    """口语清理：一次整体调用。失败重试 1 次；仍失败记 job.error 返回 None。"""
+    """口语清理 + 角色判定：一次整体调用。失败重试 1 次；仍失败记 job.error 返回 None。
+
+    成功时把 roles.role/role_label 与 cleaned.text 写回 segments，
+    并返回带角色标签的 cleaned_text（供 record 阶段与调试）。
+    """
     transcript = build_transcript_lines(db, session_id)
     if not transcript:
         mark_job_failed(db, job.id, "清理输入为空：没有可清理的转写文本")
         return None
     prompt = render_prompt("clean", settings=settings, transcript=transcript)
+    last_error: str | None = None
     for attempt in (1, 2):
         try:
             mark_job_running(db, job.id)
             text = clean_llm.complete(
                 [{"role": "user", "content": prompt}], temperature=0.3
             )
-            text = text.strip()
-            if not text:
-                raise ValueError("清理返回空文本")
+            data = parse_clean_json(text)
+            _apply_clean_result(db, session_id, data)
             mark_job_done(db, job.id)
-            return text
+            return build_cleaned_text(db, session_id)
         except Exception as exc:  # noqa: BLE001
+            last_error = f"{type(exc).__name__}: {exc}"
             logger.warning("会话 %s 清理失败（第 %d 次）: %s", session_id, attempt, exc)
-            if attempt == 2:
-                mark_job_failed(db, job.id, f"清理失败（重试后仍失败）: {exc}")
-                return None
+    mark_job_failed(db, job.id, f"清理失败（重试后仍失败）: {last_error}")
     return None
+
+
+def parse_clean_json(text: str) -> dict[str, Any]:
+    """解析 clean v2 的 JSON（角色 + 逐段清理文本）。
+
+    可剥 ```json 围栏；顶层必须是对象，且含 roles（dict）与 cleaned（list）。
+    角色值/代号覆盖/seq 对齐的校验在 _apply_clean_result 里结合落库数据做。
+    """
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text.lower().startswith("json"):
+            text = text[4:].strip()
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"非 JSON: {text[:200]}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"JSON 顶层不是对象: {text[:200]}")
+    roles = data.get("roles")
+    cleaned = data.get("cleaned")
+    if not isinstance(roles, dict) or not roles:
+        raise ValueError("roles 缺失或非对象")
+    if not isinstance(cleaned, list):
+        raise ValueError("cleaned 缺失或非数组")
+    return data
+
+
+def _apply_clean_result(db, session_id: int, data: dict[str, Any]) -> None:
+    """把 clean 结果写回 segments 并做严格校验（raise 即视为该次尝试失败）。
+
+    - roles 键必须覆盖输入中出现过的全部代号，role ∈ {T, P}；
+    - cleaned 与 segments 逐段对应（seq 为 0..n-1 且每段 text 为字符串）。
+    """
+    segments = get_segments(db, session_id)
+    roles = data["roles"]
+    codes_seen = {seg.speaker for seg in segments}
+    if not codes_seen <= set(roles):
+        missing = sorted(codes_seen - set(roles))
+        raise ValueError(f"roles 未覆盖全部说话人代号，缺失: {missing}")
+    for code, value in roles.items():
+        if not isinstance(value, dict):
+            raise ValueError(f"roles[{code!r}] 不是对象")
+        role = value.get("role")
+        label = value.get("label")
+        if role not in (Role.THERAPIST, Role.PATIENT):
+            raise ValueError(f"roles[{code!r}].role 非法: {role!r}")
+        if not isinstance(label, str) or not label:
+            raise ValueError(f"roles[{code!r}].label 缺失或非字符串")
+
+    cleaned = data["cleaned"]
+    if len(cleaned) != len(segments) or [item.get("seq") for item in cleaned] != list(
+        range(len(segments))
+    ):
+        got = [item.get("seq") for item in cleaned if isinstance(item, dict)]
+        raise ValueError(f"cleaned seq 未与 segments 对齐（段数 {len(segments)}）: {got}")
+    for idx, seg in enumerate(segments):
+        item = cleaned[idx]
+        if not isinstance(item, dict):
+            raise ValueError(f"cleaned[{idx}] 不是对象")
+        text = item.get("text")
+        if not isinstance(text, str) or not text:
+            raise ValueError(f"cleaned[{idx}].text 缺失或非字符串")
+
+    for idx, seg in enumerate(segments):
+        code_info = roles[seg.speaker]
+        seg.role = code_info["role"]
+        seg.role_label = code_info["label"]
+        seg.cleaned_content = cleaned[idx]["text"]
+    db.commit()
 
 
 def _generate_record(
@@ -193,7 +263,7 @@ def store_record(db, session_id: int, settings: Settings, data: dict[str, Any]) 
         basic_info={
             "provider": settings.llm_provider,
             "model": settings.llm_model,
-            "prompt_version": "v1",
+            "prompt_version": "v2",
             "session_id": session_id,
             "client_reported_topics": data["client_reported_topics"],
         },

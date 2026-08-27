@@ -150,7 +150,6 @@ for AUDIO_FILE in "${AUDIO_FILES[@]}"; do
 
   # 上传
   UPLOAD_JSON="$(curl -s -X POST "http://127.0.0.1:$BE_PORT/sessions" \
-    -F "speaker_zero=T" \
     -F "file=@$AUDIO_PATH")"
   echo "$UPLOAD_JSON" > "$RESULT_DIR/upload_${TAG}.json"
 
@@ -192,17 +191,20 @@ for AUDIO_FILE in "${AUDIO_FILES[@]}"; do
   # ── 断言 ──────────────────────────────────────────────────────
   SEG_COUNT="$(echo "$DETAIL_JSON" | jq '.data.segments | length')"
   SPEAKERS="$(echo "$DETAIL_JSON" | jq -r '[.data.segments[].speaker] | unique | sort | join("+")')"
-  HAS_CT="$(echo "$DETAIL_JSON" | jq 'if .data.cleaned_text then true else false end')"
+  ROLES="$(echo "$DETAIL_JSON" | jq -r '[.data.segments[].role] | unique | sort | join("+")')"
+  HAS_CTC="$(echo "$DETAIL_JSON" | jq 'if (.data.segments | all(has("cleaned_content"))) and ([.data.segments[].cleaned_content] | all(. != null)) then true else false end')"
   HAS_SUM="$(echo "$DETAIL_JSON" | jq 'if .data.record.summary then true else false end')"
   HAS_CW="$(echo "$DETAIL_JSON" | jq 'if .data.record.counselor_work then true else false end')"
 
   ASSERT_OK=true
   [ "$SEG_COUNT" -lt 5 ]               && { echo "[FAIL] segments=$SEG_COUNT < 5"; ASSERT_OK=false; }
-  ( echo "$SPEAKERS" | grep -q "T" && echo "$SPEAKERS" | grep -q "P" ) \
-                                         || { echo "[FAIL] speakers=$SPEAKERS (need T+P)"; ASSERT_OK=false; }
-  [ "$HAS_CT"  = "true" ]              || { echo "[FAIL] cleaned_text empty";               ASSERT_OK=false; }
-  [ "$HAS_SUM" = "true" ]              || { echo "[FAIL] record.summary missing";            ASSERT_OK=false; }
-  [ "$HAS_CW"  = "true" ]              || { echo "[FAIL] record.counselor_work missing";     ASSERT_OK=false; }
+  [ "$(echo "$SPEAKERS" | tr '+' '\n' | wc -l)" -lt 2 ] \
+                                         && { echo "[FAIL] speakers=$SPEAKERS (need >=2 codes)"; ASSERT_OK=false; }
+  ( echo "$ROLES" | grep -q "T" && echo "$ROLES" | grep -q "P" ) \
+                                         || { echo "[FAIL] roles=$ROLES (need T+P)"; ASSERT_OK=false; }
+  [ "$HAS_CTC" = "true" ]               || { echo "[FAIL] cleaned_content empty";            ASSERT_OK=false; }
+  [ "$HAS_SUM" = "true" ]               || { echo "[FAIL] record.summary missing";            ASSERT_OK=false; }
+  [ "$HAS_CW"  = "true" ]               || { echo "[FAIL] record.counselor_work missing";     ASSERT_OK=false; }
 
   if [ "$ASSERT_OK" = "true" ]; then
     ROWS+=("${AUDIO_FILE}|done|${SEG_COUNT}|${SPEAKERS}|${ELAPSED}s")

@@ -5,11 +5,11 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, File, Form, Request, UploadFile
+from fastapi import APIRouter, BackgroundTasks, File, Request, UploadFile
 
 from .audio import save_upload_to_audio_dir, validate_audio_ext
 from .config import Settings
-from .enums import SessionMode, SessionStatus, Speaker
+from .enums import SessionMode, SessionStatus
 from .models import Record, Session
 from .providers import get_asr_provider, get_llm_provider
 from .response import ApiError, ok
@@ -44,22 +44,15 @@ async def create_session(
     request: Request,
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    speaker_zero: str = Form(Speaker.THERAPIST),
 ):
     """上传音频 → 校验 → 随机名落盘 → 建 sessions 行 → 起后台任务。
 
     返回 {session_id, status=uploading}；后台任务接续 transcribing → done/failed。
     会话可重交：复用本端点，重建 job 行并幂等清空旧 segments。
+    T-S1.1 起不再接收说话人映射参数（多余表单字段忽略）。
     """
     settings = _settings_of(request)
     audio_dir = Path(settings.data_dir) / "audio"
-
-    if speaker_zero not in (Speaker.THERAPIST, Speaker.PATIENT):
-        raise ApiError(
-            "validation_error",
-            f"speaker_zero 只能是 'T' 或 'P'，收到 {speaker_zero!r}",
-            http_status=422,
-        )
 
     suffix = validate_audio_ext(file.filename)
     # 大小在流式写入途中校验（超限中断并 413），不需要二次 stat
@@ -90,7 +83,6 @@ async def create_session(
             _session_factory_of(request),
             settings,
             audio_path,
-            speaker_zero,
             asr,
             clean_llm,
             record_llm,
@@ -106,7 +98,7 @@ async def create_session(
 
 @router.get("/sessions/{session_id}")
 def get_session(request: Request, session_id: int):
-    """会话详情：状态 + segments（按 seq）+ cleaned_text + record（若有）。"""
+    """会话详情：状态 + segments（按 seq，含代号/角色/清理文本）+ record（若有）。"""
     db = _open_db(request)
     try:
         session = db.get(Session, session_id)
@@ -118,6 +110,9 @@ def get_session(request: Request, session_id: int):
             {
                 "seq": seg.seq,
                 "speaker": seg.speaker,
+                "role": seg.role,
+                "role_label": seg.role_label,
+                "cleaned_content": seg.cleaned_content,
                 "content": seg.content,
                 "start_ms": seg.start_ms,
                 "end_ms": seg.end_ms,
