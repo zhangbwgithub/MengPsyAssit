@@ -60,13 +60,19 @@ class OpenAICompatLLM(LLMProvider):
         *,
         schema_hint: str | None = None,
         temperature: float = 0.3,
+        extra_body: dict | None = None,
     ) -> str:
-        """对话补全，返回文本内容。"""
+        """对话补全，返回文本内容。
+
+        extra_body 非空时合并进请求 body（T-S1.5：DeepSeek 关思考用；MIMO/Qwen 不传不受影响）。
+        """
         body = {
             "model": self._model,
             "messages": self.build_messages(messages, schema_hint),
             "temperature": temperature,
         }
+        if extra_body:
+            body.update(extra_body)
         payload = self._post_chat(body)
         try:
             return payload["choices"][0]["message"]["content"]

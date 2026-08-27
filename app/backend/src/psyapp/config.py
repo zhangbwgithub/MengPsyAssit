@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     # llm_model 留空 = 跟随 llm_provider 的默认模型（见下方 validator）；
     # 显式设置（如 LLM_MODEL=qwen-max）则覆盖。这样仅切 LLM_PROVIDER 时模型自动跟随。
     llm_model: str = ""
+    # T-S1.5：clean 阶段独立模型配置（record 继续用 llm_provider=mimo，陛下 T-S0.6 决策，红线）。
+    # 默认 deepseek（deepseek-v4-flash）；.env 可一行 CLEAN_LLM_PROVIDER=mimo 切回。
+    clean_llm_provider: str = "deepseek"
+    # clean_llm_model 留空 = 跟随 clean_llm_provider 的默认模型（逻辑仿 _resolve_llm_model）。
+    clean_llm_model: str = ""
     # Prompt 模板目录（默认 app/backend/prompts，相对仓库根解析）
     prompts_dir: str = ""
 
@@ -39,6 +44,12 @@ class Settings(BaseSettings):
     def _resolve_llm_model(self) -> "Settings":
         if not self.llm_model:
             self.llm_model = LLM_DEFAULT_MODELS.get(self.llm_provider, "")
+        return self
+
+    @model_validator(mode="after")
+    def _resolve_clean_llm_model(self) -> "Settings":
+        if not self.clean_llm_model:
+            self.clean_llm_model = LLM_DEFAULT_MODELS.get(self.clean_llm_provider, "")
         return self
 
     @model_validator(mode="after")

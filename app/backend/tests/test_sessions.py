@@ -154,7 +154,7 @@ def test_upload_full_chain_creates_segments_clean_and_record(client, monkeypatch
         rec = db.query(Record).filter(Record.session_id == session_id).one()
         assert rec.basic_info["provider"] == "mimo"
         assert rec.basic_info["model"] == "mimo-v2.5-pro"
-        assert rec.basic_info["prompt_version"] == "v2"
+        assert rec.basic_info["prompt_version"] == "v4"
         jobs = db.query(Job).filter(Job.session_id == session_id).all()
         job_types = {j.type for j in jobs}
         assert {"transcribe", "clean", "record"} <= job_types
@@ -162,6 +162,57 @@ def test_upload_full_chain_creates_segments_clean_and_record(client, monkeypatch
         # T-S1.2：jobs 可观测性时间戳均写入
         assert all(j.started_at is not None for j in jobs)
         assert all(j.finished_at is not None for j in jobs)
+    finally:
+        db.close()
+
+
+def test_clean_uses_deepseek_and_record_uses_mimo(client, monkeypatch):
+    """T-S1.5：clean 按 clean_llm_provider 构造（默认 deepseek），record 仍按 llm_provider（mimo）。"""
+    monkeypatch.setattr("psyapp.routes.get_asr_provider", lambda s: FakeASR())
+    calls = []
+
+    def fake_llm(s):
+        calls.append((s.llm_provider, s.llm_model))
+        if s.llm_provider == "deepseek":
+            clean = FakeCleanLLM([GOOD_CLEAN])
+            clean.name = "deepseek"
+            return clean
+        record = FakeRecordLLM([GOOD_RECORD])
+        record.name = "mimo"
+        return record
+
+    monkeypatch.setattr("psyapp.routes.get_llm_provider", fake_llm)
+
+    resp = client.post("/sessions", files={"file": ("x.wav", b"fake-wav-bytes", "audio/wav")})
+    assert resp.status_code == 200, resp.text
+    session_id = resp.json()["data"]["session_id"]
+    detail = client.get(f"/sessions/{session_id}").json()["data"]
+    assert detail["status"] == SessionStatus.DONE
+
+    # 第一次调用给 clean（deepseek），第二次调用给 record（mimo）
+    assert calls == [
+        ("deepseek", "deepseek-v4-flash"),
+        ("mimo", "mimo-v2.5-pro"),
+    ]
+
+    from psyapp.db import create_session_factory
+
+    factory = create_session_factory(client.app.state.engine)
+    db = factory()
+    try:
+        clean_job = (
+            db.query(Job)
+            .filter(Job.session_id == session_id, Job.type == "clean")
+            .one()
+        )
+        record_job = (
+            db.query(Job)
+            .filter(Job.session_id == session_id, Job.type == "record")
+            .one()
+        )
+        # jobs 表 clean 行的 provider 字段如实记 deepseek；record 行仍为 mimo
+        assert clean_job.provider == "deepseek"
+        assert record_job.provider == "mimo"
     finally:
         db.close()
 

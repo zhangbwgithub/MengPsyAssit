@@ -27,6 +27,20 @@ def _session_factory_of(request: Request):
     return request.app.state.session_factory
 
 
+def _settings_for_clean(settings: Settings) -> Settings:
+    """T-S1.5：clean 阶段独立模型配置。
+
+    clean 用 clean_llm_provider/clean_llm_model 构造 LLM；record 继续用 llm_provider（mimo）。
+    clean_llm_model 已在 Settings validator 里解析为 provider 默认模型。
+    """
+    return settings.model_copy(
+        update={
+            "llm_provider": settings.clean_llm_provider,
+            "llm_model": settings.clean_llm_model,
+        }
+    )
+
+
 def _get_dev_user_id(request: Request) -> int:
     return request.app.state.settings.dev_user_id
 
@@ -75,7 +89,8 @@ async def create_session(
         session_id = session.id
 
         asr = get_asr_provider(settings)
-        clean_llm = get_llm_provider(settings)
+        # T-S1.5：clean 独立走 clean_llm_provider（默认 deepseek）；record 继续走 llm_provider（mimo）。
+        clean_llm = get_llm_provider(_settings_for_clean(settings))
         record_llm = get_llm_provider(settings)
         background_tasks.add_task(
             run_background_pipeline,
