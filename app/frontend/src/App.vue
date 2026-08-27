@@ -4,9 +4,18 @@ import { ref, computed, onUnmounted } from 'vue'
 // 支持的音频扩展名（与后端校验保持一致）
 const ALLOWED_EXTS = ['.wav', '.m4a', '.mp3', '.opus', '.flac']
 
+// 每人一色调色板（按代号首现序分配；浅背景 + 同色系边框 + 深色文字）
+const SPEAKER_PALETTE = [
+  { bg: '#eef4ff', border: '#b7d0fb', text: '#1e409e' }, // 蓝
+  { bg: '#e8f7f0', border: '#a9e2c6', text: '#146c4b' }, // 绿
+  { bg: '#fdf4e3', border: '#f2d49b', text: '#8f5a12' }, // 琥珀
+  { bg: '#f1eefb', border: '#cfc2f2', text: '#5b3bb0' }, // 紫
+  { bg: '#fcecf0', border: '#f4bdcb', text: '#9c2f4f' }, // 玫红
+  { bg: '#e7f6fa', border: '#b2e2ee', text: '#0f6b79' }, // 青
+]
+
 const file = ref(null)
 const fileName = ref('')
-const speakerZero = ref('T')
 const uploading = ref(false)
 const error = ref('')
 const sessionId = ref(null)
@@ -51,7 +60,6 @@ async function upload() {
   try {
     const form = new FormData()
     form.append('file', file.value)
-    form.append('speaker_zero', speakerZero.value)
     const res = await fetch('/api/sessions', { method: 'POST', body: form })
     const json = await res.json()
     if (!json.ok) {
@@ -122,9 +130,56 @@ function formatMs(ms) {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
 }
 
-function splitCleanedText(text) {
-  if (!text) return []
-  return text.split('\n').filter((line) => line.trim().length > 0)
+// 气泡列表单一来源：segments；文本优先 cleaned_content，无则 content
+const bubbleSegments = computed(() => {
+  const segments = sessionData.value?.segments || []
+  return segments.map((seg) => ({
+    ...seg,
+    bubbleText: seg.cleaned_content ?? seg.content ?? '',
+  }))
+})
+
+// 按代号首现序建立「代号 → 调色板颜色」映射（每人一色）
+const speakerColors = computed(() => {
+  const map = {}
+  for (const seg of sessionData.value?.segments || []) {
+    if (seg.speaker && !(seg.speaker in map)) {
+      map[seg.speaker] =
+        SPEAKER_PALETTE[Object.keys(map).length % SPEAKER_PALETTE.length]
+    }
+  }
+  return map
+})
+
+function colorOf(speaker) {
+  return (
+    speakerColors.value[speaker] || {
+      bg: '#f3f4f6',
+      border: '#d1d5db',
+      text: '#374151',
+    }
+  )
+}
+
+function styleOf(seg) {
+  const color = colorOf(seg.speaker)
+  return {
+    backgroundColor: color.bg,
+    borderColor: color.border,
+    color: color.text,
+  }
+}
+
+function labelOf(seg) {
+  if (seg.role_label) return seg.role_label
+  return `说话人 ${seg.speaker || '?'}`
+}
+
+// role=T 靠左、role=P 靠右、未判定居中
+function alignClassOf(seg) {
+  if (seg.role === 'T') return 'align-left'
+  if (seg.role === 'P') return 'align-right'
+  return 'align-center'
 }
 
 const metaInfoText = computed(() => {
@@ -164,28 +219,6 @@ onUnmounted(stopPolling)
           </label>
         </div>
 
-        <div class="form-row speaker-row">
-          <span class="label">说话人 0 映射：</span>
-          <label class="radio">
-            <input
-              type="radio"
-              value="T"
-              v-model="speakerZero"
-              :disabled="uploading"
-            />
-            咨询师（T）
-          </label>
-          <label class="radio">
-            <input
-              type="radio"
-              value="P"
-              v-model="speakerZero"
-              :disabled="uploading"
-            />
-            来访者（P）
-          </label>
-        </div>
-
         <div class="form-row">
           <button
             class="btn primary"
@@ -215,21 +248,21 @@ onUnmounted(stopPolling)
       </section>
 
       <!-- 对话稿区 -->
-      <section class="card dialogue-card" v-if="sessionData?.segments?.length">
+      <section class="card dialogue-card" v-if="bubbleSegments.length">
         <h2>2. 转写对话稿</h2>
         <div class="segments">
           <div
-            v-for="seg in sessionData.segments"
+            v-for="seg in bubbleSegments"
             :key="seg.seq"
             class="segment"
-            :class="{ 'speaker-t': seg.speaker === 'T', 'speaker-p': seg.speaker === 'P' }"
+            :class="alignClassOf(seg)"
           >
-            <div class="bubble">
+            <div class="bubble" :style="styleOf(seg)">
               <div class="bubble-header">
-                <span class="speaker-label">{{ seg.speaker === 'T' ? '咨询师 T' : '来访者 P' }}</span>
+                <span class="speaker-label">{{ labelOf(seg) }}</span>
                 <span class="time">#{{ seg.seq }} · {{ formatMs(seg.start_ms) }}</span>
               </div>
-              <p class="content">{{ seg.content }}</p>
+              <p class="content">{{ seg.bubbleText }}</p>
             </div>
           </div>
         </div>
@@ -238,15 +271,6 @@ onUnmounted(stopPolling)
       <!-- 结果区 -->
       <section class="card result-card" v-if="sessionData?.status === 'done'">
         <h2>3. 处理结果</h2>
-
-        <div class="result-block" v-if="sessionData.cleaned_text">
-          <h3>清理后文本</h3>
-          <div class="cleaned-text">
-            <p v-for="(line, idx) in splitCleanedText(sessionData.cleaned_text)" :key="idx">
-              {{ line }}
-            </p>
-          </div>
-        </div>
 
         <div class="result-block" v-if="sessionData.record">
           <h3>咨询记录</h3>
@@ -296,10 +320,6 @@ onUnmounted(stopPolling)
   --primary: #2563eb;
   --primary-dark: #1d4ed8;
   --danger: #dc2626;
-  --t-color: #2563eb;
-  --t-bg: #eff6ff;
-  --p-color: #059669;
-  --p-bg: #ecfdf5;
   --radius: 12px;
   --shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
 }
@@ -392,19 +412,6 @@ body {
   word-break: break-all;
 }
 
-.label {
-  font-weight: 500;
-  color: var(--text);
-}
-
-.radio {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  cursor: pointer;
-  font-size: 0.95rem;
-}
-
 .btn {
   border: none;
   border-radius: 8px;
@@ -492,31 +499,33 @@ body {
   display: flex;
 }
 
-.segment.speaker-t {
+.segment.align-left {
   justify-content: flex-start;
 }
 
-.segment.speaker-p {
+.segment.align-right {
   justify-content: flex-end;
 }
 
+.segment.align-center {
+  justify-content: center;
+}
+
 .bubble {
-  max-width: 80%;
+  max-width: 85%;
   padding: 12px 14px;
   border-radius: 16px;
-  border-top-left-radius: 4px;
+  border: 1px solid transparent;
 }
 
-.speaker-t .bubble {
-  background: var(--t-bg);
-  border: 1px solid #bfdbfe;
-}
-
-.speaker-p .bubble {
-  background: var(--p-bg);
-  border: 1px solid #a7f3d0;
+.align-right .bubble {
   border-top-left-radius: 16px;
   border-top-right-radius: 4px;
+}
+
+.align-left .bubble {
+  border-top-left-radius: 4px;
+  border-top-right-radius: 16px;
 }
 
 .bubble-header {
@@ -529,14 +538,7 @@ body {
 .speaker-label {
   font-weight: 600;
   font-size: 0.85rem;
-}
-
-.speaker-t .speaker-label {
-  color: var(--t-color);
-}
-
-.speaker-p .speaker-label {
-  color: var(--p-color);
+  color: inherit;
 }
 
 .time {
@@ -547,6 +549,7 @@ body {
 .content {
   margin: 0;
   font-size: 0.95rem;
+  color: inherit;
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -559,23 +562,6 @@ body {
   margin: 0 0 10px;
   font-size: 1rem;
   color: var(--muted);
-}
-
-.cleaned-text {
-  background: #f9fafb;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  padding: 14px;
-  font-size: 0.95rem;
-  white-space: pre-wrap;
-}
-
-.cleaned-text p {
-  margin: 0 0 6px;
-}
-
-.cleaned-text p:last-child {
-  margin-bottom: 0;
 }
 
 .record-card {

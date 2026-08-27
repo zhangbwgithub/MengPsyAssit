@@ -19,10 +19,17 @@ class SessionStatus:
     FAILED = "failed"
 
 
-class Speaker:
+class SpeakerCode:
+    """转写阶段说话人代号（T-S1.1 起不再预设角色，未知代号兜底用 U）。"""
+
+    UNKNOWN = "U"
+
+
+class Role:
+    """清理阶段由 LLM 判定的具体角色。"""
+
     THERAPIST = "T"
     PATIENT = "P"
-    UNKNOWN = "U"
 
 
 class SegmentSource:

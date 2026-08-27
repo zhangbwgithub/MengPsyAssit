@@ -17,7 +17,7 @@ from .enums import (
     RecordStatus,
     SegmentSource,
     SessionStatus,
-    Speaker,
+    SpeakerCode,
 )
 
 
@@ -73,7 +73,12 @@ class Segment(Base):
     )
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
     seq: Mapped[int] = mapped_column(Integer, nullable=False)
-    speaker: Mapped[str] = mapped_column(String(1), nullable=False, default=Speaker.UNKNOWN)
+    speaker: Mapped[str] = mapped_column(
+        String(8), nullable=False, default=SpeakerCode.UNKNOWN
+    )
+    role: Mapped[str | None] = mapped_column(String(1), nullable=True)
+    role_label: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    cleaned_content: Mapped[str | None] = mapped_column(Text, nullable=True)
     source: Mapped[str] = mapped_column(String(16), nullable=False, default=SegmentSource.ASR)
     content: Mapped[str] = mapped_column(Text, nullable=False, default="")
     start_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

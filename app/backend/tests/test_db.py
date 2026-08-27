@@ -38,6 +38,36 @@ def test_init_db_seeds_dev_user_in_dev(app_settings):
         assert session.scalar(select(func.count()).select_from(User)) == 1
 
 
+def test_init_db_heals_missing_segment_columns(app_settings):
+    """旧 segments 表（缺 role/role_label/cleaned_content）经 init_db 自动补齐。"""
+    engine = build_engine(app_settings)
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE segments (
+                id INTEGER NOT NULL PRIMARY KEY,
+                session_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                seq INTEGER NOT NULL,
+                speaker VARCHAR(1) NOT NULL,
+                source VARCHAR(16) NOT NULL,
+                content TEXT NOT NULL,
+                start_ms INTEGER NOT NULL,
+                end_ms INTEGER NOT NULL,
+                confidence FLOAT
+            )
+            """
+        )
+
+    init_db(engine, app_settings)
+
+    with engine.connect() as conn:
+        columns = [row[1] for row in conn.exec_driver_sql("PRAGMA table_info(segments)")]
+
+    for column in ("role", "role_label", "cleaned_content"):
+        assert column in columns, f"segments 未补齐 {column}，实际列={columns}"
+
+
 def test_init_db_heals_missing_columns_in_old_schema(app_settings):
     """旧库（sessions 缺 cleaned_text）经 init_db 后自动补齐且原列/原数据完好。"""
     engine = build_engine(app_settings)

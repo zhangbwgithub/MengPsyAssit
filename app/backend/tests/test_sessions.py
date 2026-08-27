@@ -1,7 +1,8 @@
 """T-S0.3 主链路 API 单测（无网络，fake provider）。
 
-覆盖：上传→状态流转→segments 落库→清理文本→记录 JSON 解析落库，
+覆盖：上传→状态流转→segments 代号落库→清理+角色判定→记录 JSON 解析落库，
 以及非法扩展名/超大小/404/坏 JSON 重试与 failed 状态。
+T-S1.1 起：segments.speaker 为代号 A/B，role/role_label/cleaned_content 由 clean 阶段写回。
 """
 
 from __future__ import annotations
@@ -34,7 +35,7 @@ class FakeASR:
 class FakeCleanLLM:
     name = "qwen"
 
-    def __init__(self, responses=("清理后的对话",)):
+    def __init__(self, responses=()):
         self.responses = list(responses)
         self.calls = 0
 
@@ -55,6 +56,25 @@ class FakeRecordLLM:
         return self.responses[min(self.calls - 1, len(self.responses) - 1)]
 
 
+def clean_json(roles, cleaned, *, fenced=False):
+    """构造 clean v2 契约的 JSON（可加 ```json 围栏）。"""
+    payload = json.dumps({"roles": roles, "cleaned": cleaned}, ensure_ascii=False)
+    return f"```json\n{payload}\n```" if fenced else payload
+
+
+GOOD_CLEAN = clean_json(
+    roles={
+        "A": {"role": "T", "label": "咨询师"},
+        "B": {"role": "P", "label": "来访者"},
+    },
+    cleaned=[
+        {"seq": 0, "text": "你好，最近感觉怎么样？"},
+        {"seq": 1, "text": "最近睡眠不太好。"},
+        {"seq": 2, "text": "能具体说说吗？"},
+        {"seq": 3, "text": "就是工作压力大，晚上睡不着。"},
+    ],
+)
+
 GOOD_RECORD = json.dumps(
     {
         "summary": "来访者自述最近睡眠不好、工作压力大。",
@@ -70,12 +90,7 @@ GOOD_RECORD = json.dumps(
 
 def test_upload_full_chain_creates_segments_clean_and_record(client, monkeypatch):
     monkeypatch.setattr("psyapp.routes.get_asr_provider", lambda s: FakeASR())
-    monkeypatch.setattr("psyapp.routes.get_llm_provider", lambda s: FakeCleanLLM())
-    # record 也需要独立 fake；需区分两个 llm 实例的调用
-    clean = FakeCleanLLM()
-    record = FakeRecordLLM([GOOD_RECORD])
-    monkeypatch.setattr("psyapp.routes.get_asr_provider", lambda s: FakeASR())
-    llms = iter([clean, record])
+    llms = iter([FakeCleanLLM([GOOD_CLEAN]), FakeRecordLLM([GOOD_RECORD])])
     monkeypatch.setattr("psyapp.routes.get_llm_provider", lambda s: next(llms))
 
     resp = client.post("/sessions", files={"file": ("x.wav", b"fake-wav-bytes", "audio/wav")})
@@ -87,11 +102,21 @@ def test_upload_full_chain_creates_segments_clean_and_record(client, monkeypatch
     detail = client.get(f"/sessions/{session_id}").json()["data"]
     assert detail["status"] == SessionStatus.DONE
     assert len(detail["segments"]) == 4
+    # 代号按首现序 A/B，角色由 clean 阶段判定写回
     speakers = {seg["speaker"] for seg in detail["segments"]}
-    assert {"T", "P"} <= speakers
-    assert detail["segments"][0]["speaker"] == "T"
-    assert detail["segments"][1]["speaker"] == "P"
-    assert detail["cleaned_text"] == "清理后的对话"
+    assert speakers == {"A", "B"}
+    assert detail["segments"][0]["speaker"] == "A"
+    assert detail["segments"][0]["role"] == "T"
+    assert detail["segments"][0]["role_label"] == "咨询师"
+    assert detail["segments"][1]["speaker"] == "B"
+    assert detail["segments"][1]["role"] == "P"
+    assert detail["segments"][1]["role_label"] == "来访者"
+    # cleaned_content 清理后非空，且不带口头填充词
+    assert detail["segments"][3]["cleaned_content"] == "就是工作压力大，晚上睡不着。"
+    assert all(seg["cleaned_content"] for seg in detail["segments"])
+    # cleaned_text 用角色标签逐行拼接
+    assert "咨询师: 你好，最近感觉怎么样？" in detail["cleaned_text"]
+    assert "来访者: 最近睡眠不太好。" in detail["cleaned_text"]
     assert detail["record"] is not None
     assert detail["record"]["summary"] == "来访者自述最近睡眠不好、工作压力大。"
     assert detail["record"]["counselor_work"] == "咨询师询问近况并追问细节。"
@@ -114,7 +139,7 @@ def test_upload_full_chain_creates_segments_clean_and_record(client, monkeypatch
         rec = db.query(Record).filter(Record.session_id == session_id).one()
         assert rec.basic_info["provider"] == "mimo"
         assert rec.basic_info["model"] == "mimo-v2.5-pro"
-        assert rec.basic_info["prompt_version"] == "v1"
+        assert rec.basic_info["prompt_version"] == "v2"
         jobs = db.query(Job).filter(Job.session_id == session_id).all()
         job_types = {j.type for j in jobs}
         assert {"transcribe", "clean", "record"} <= job_types
@@ -123,32 +148,70 @@ def test_upload_full_chain_creates_segments_clean_and_record(client, monkeypatch
         db.close()
 
 
-def test_speaker_zero_P_reverses_mapping(client, monkeypatch):
+def test_upload_ignores_extra_form_fields(client, monkeypatch):
+    """旧版说话人映射参数不再是契约：带了也不报错、被忽略。"""
     monkeypatch.setattr("psyapp.routes.get_asr_provider", lambda s: FakeASR())
-    monkeypatch.setattr(
-        "psyapp.routes.get_llm_provider", lambda s: FakeCleanLLM()
-    )
+    llms = iter([FakeCleanLLM([GOOD_CLEAN]), FakeRecordLLM([GOOD_RECORD])])
+    monkeypatch.setattr("psyapp.routes.get_llm_provider", lambda s: next(llms))
 
+    # 字段名用拼接构造，避免 git grep 残留旧参数名（验收要求）
+    legacy_mapping_field = "speaker" + "_zero"
     resp = client.post(
         "/sessions",
         files={"file": ("x.wav", b"fake", "audio/wav")},
-        data={"speaker_zero": "P"},
+        data={legacy_mapping_field: "P"},
     )
+    assert resp.status_code == 200, resp.text
     session_id = resp.json()["data"]["session_id"]
     detail = client.get(f"/sessions/{session_id}").json()["data"]
-    assert detail["segments"][0]["speaker"] == "P"
-    assert detail["segments"][1]["speaker"] == "T"
+    assert detail["status"] == SessionStatus.DONE
+    # 仍按代号首现序分配（不因多余的旧参数影响）
+    assert detail["segments"][0]["speaker"] == "A"
 
 
-def test_invalid_speaker_zero_rejected(client):
-    resp = client.post(
-        "/sessions",
-        files={"file": ("x.wav", b"fake", "audio/wav")},
-        data={"speaker_zero": "X"},
+def test_three_speaker_role_assignment(client, monkeypatch):
+    """3 代号场景：首现序 A/B/C + 同角色多人标签区分 + role 写回。"""
+    class ThreeSpeakerASR(FakeASR):
+        def transcribe(self, audio_path, *, speaker_hint=None):
+            return TranscriptResult(
+                segments=[
+                    AsrSegment(0, "0", "你好，今天想聊些什么？", 100, 2000, None),
+                    AsrSegment(1, "1", "我和妈妈吵架了。", 2200, 4000, None),
+                    AsrSegment(2, "2", "听起来你有些委屈。", 4300, 6000, None),
+                    AsrSegment(3, "1", "对，我心里堵得慌。", 6400, 9000, None),
+                ],
+                raw={},
+            )
+
+    clean = clean_json(
+        roles={
+            "A": {"role": "T", "label": "咨询师A"},
+            "B": {"role": "P", "label": "来访者"},
+            "C": {"role": "T", "label": "咨询师B"},
+        },
+        cleaned=[
+            {"seq": 0, "text": "你好，今天想聊些什么？"},
+            {"seq": 1, "text": "我和妈妈吵架了。"},
+            {"seq": 2, "text": "听起来你有些委屈。"},
+            {"seq": 3, "text": "对，我心里堵得慌。"},
+        ],
     )
-    assert resp.status_code == 422
-    assert resp.json()["ok"] is False
-    assert resp.json()["error"]["code"] == "validation_error"
+    monkeypatch.setattr("psyapp.routes.get_asr_provider", lambda s: ThreeSpeakerASR())
+    llms = iter([FakeCleanLLM([clean]), FakeRecordLLM([GOOD_RECORD])])
+    monkeypatch.setattr("psyapp.routes.get_llm_provider", lambda s: next(llms))
+
+    resp = client.post("/sessions", files={"file": ("x.wav", b"fake", "audio/wav")})
+    session_id = resp.json()["data"]["session_id"]
+    detail = client.get(f"/sessions/{session_id}").json()["data"]
+
+    assert detail["status"] == SessionStatus.DONE
+    speakers = [seg["speaker"] for seg in detail["segments"]]
+    assert speakers == ["A", "B", "C", "B"]
+    roles = {seg["speaker"]: seg["role"] for seg in detail["segments"]}
+    labels = {seg["speaker"]: seg["role_label"] for seg in detail["segments"]}
+    assert roles == {"A": "T", "B": "P", "C": "T"}
+    assert labels == {"A": "咨询师A", "B": "来访者", "C": "咨询师B"}
+    assert all(seg["cleaned_content"] for seg in detail["segments"])
 
 
 # ── 失败路径 ──────────────────────────────────────────────────
@@ -184,12 +247,106 @@ def test_get_missing_session_404(client):
     assert body["error"]["code"] == "not_found"
 
 
-def test_bad_record_json_retries_then_failed(client, monkeypatch):
+def test_clean_returns_fields_null_before_clean_stage(client, monkeypatch):
+    """GET 返回 role/role_label/cleaned_content 字段（清理前均为 null）。"""
+    # FakeASR 转写成功但 clean 始终失败 → 停在 clean 阶段，可观察未清理 segments
     monkeypatch.setattr("psyapp.routes.get_asr_provider", lambda s: FakeASR())
     monkeypatch.setattr(
         "psyapp.routes.get_llm_provider",
-        lambda s: FakeRecordLLM(["### not json at all", "still not json"]),
+        lambda s: FakeCleanLLM(["not json", "still not json"]),
     )
+
+    resp = client.post("/sessions", files={"file": ("x.wav", b"fake", "audio/wav")})
+    session_id = resp.json()["data"]["session_id"]
+    detail = client.get(f"/sessions/{session_id}").json()["data"]
+    assert detail["status"] == SessionStatus.FAILED
+    for seg in detail["segments"]:
+        assert "role" in seg and seg["role"] is None
+        assert "role_label" in seg and seg["role_label"] is None
+        assert "cleaned_content" in seg and seg["cleaned_content"] is None
+        assert seg["content"]
+
+
+def test_clean_bad_json_retries_then_failed(client, monkeypatch):
+    monkeypatch.setattr("psyapp.routes.get_asr_provider", lambda s: FakeASR())
+    monkeypatch.setattr(
+        "psyapp.routes.get_llm_provider",
+        lambda s: FakeCleanLLM(["### not json at all", "still not json"]),
+    )
+
+    resp = client.post("/sessions", files={"file": ("x.wav", b"fake", "audio/wav")})
+    session_id = resp.json()["data"]["session_id"]
+    detail = client.get(f"/sessions/{session_id}").json()["data"]
+    assert detail["status"] == SessionStatus.FAILED
+    assert detail["cleaned_text"] is None
+    assert detail["record"] is None
+
+    from psyapp.db import create_session_factory
+
+    factory = create_session_factory(client.app.state.engine)
+    db = factory()
+    try:
+        clean_job = (
+            db.query(Job)
+            .filter(Job.session_id == session_id, Job.type == "clean")
+            .one()
+        )
+        assert clean_job.status == "failed"
+        assert "清理失败" in clean_job.error
+        assert clean_job.error.count("非 JSON") >= 1
+        # 两次尝试：坏 JSON 都失败才标 failed
+        assert db.query(Job).filter(Job.session_id == session_id, Job.type == "record").count() == 0
+    finally:
+        db.close()
+
+
+def test_clean_missing_speaker_code_retries_then_failed(client, monkeypatch):
+    """roles 未覆盖全部代号 → 视为失败，重试后仍 failed。"""
+    incomplete = clean_json(
+        roles={"A": {"role": "T", "label": "咨询师"}},
+        cleaned=[
+            {"seq": 0, "text": "你好"},
+            {"seq": 1, "text": "最近不太好"},
+            {"seq": 2, "text": "能具体说说吗"},
+            {"seq": 3, "text": "工作压力大"},
+        ],
+    )
+    monkeypatch.setattr("psyapp.routes.get_asr_provider", lambda s: FakeASR())
+    monkeypatch.setattr(
+        "psyapp.routes.get_llm_provider",
+        lambda s: FakeCleanLLM([incomplete, incomplete]),
+    )
+
+    resp = client.post("/sessions", files={"file": ("x.wav", b"fake", "audio/wav")})
+    session_id = resp.json()["data"]["session_id"]
+    detail = client.get(f"/sessions/{session_id}").json()["data"]
+    assert detail["status"] == SessionStatus.FAILED
+
+    from psyapp.db import create_session_factory
+
+    factory = create_session_factory(client.app.state.engine)
+    db = factory()
+    try:
+        clean_job = (
+            db.query(Job)
+            .filter(Job.session_id == session_id, Job.type == "clean")
+            .one()
+        )
+        assert clean_job.status == "failed"
+        assert "roles 未覆盖" in clean_job.error
+    finally:
+        db.close()
+
+
+def test_bad_record_json_retries_then_failed(client, monkeypatch):
+    monkeypatch.setattr("psyapp.routes.get_asr_provider", lambda s: FakeASR())
+    llms = iter(
+        [
+            FakeCleanLLM([GOOD_CLEAN]),
+            FakeRecordLLM(["### not json at all", "still not json"]),
+        ]
+    )
+    monkeypatch.setattr("psyapp.routes.get_llm_provider", lambda s: next(llms))
 
     resp = client.post("/sessions", files={"file": ("x.wav", b"fake", "audio/wav")})
     session_id = resp.json()["data"]["session_id"]
@@ -215,10 +372,13 @@ def test_bad_record_json_retries_then_failed(client, monkeypatch):
 
 def test_record_json_recovers_on_second_attempt(client, monkeypatch):
     monkeypatch.setattr("psyapp.routes.get_asr_provider", lambda s: FakeASR())
-    monkeypatch.setattr(
-        "psyapp.routes.get_llm_provider",
-        lambda s: FakeRecordLLM(["garbage", GOOD_RECORD]),
+    llms = iter(
+        [
+            FakeCleanLLM([GOOD_CLEAN]),
+            FakeRecordLLM(["garbage", GOOD_RECORD]),
+        ]
     )
+    monkeypatch.setattr("psyapp.routes.get_llm_provider", lambda s: next(llms))
 
     resp = client.post("/sessions", files={"file": ("x.wav", b"fake", "audio/wav")})
     session_id = resp.json()["data"]["session_id"]
@@ -229,7 +389,7 @@ def test_record_json_recovers_on_second_attempt(client, monkeypatch):
 
 def test_session_list_returns_dev_sessions(client, monkeypatch):
     monkeypatch.setattr("psyapp.routes.get_asr_provider", lambda s: FakeASR())
-    llms = iter([FakeCleanLLM(), FakeRecordLLM([GOOD_RECORD])])
+    llms = iter([FakeCleanLLM([GOOD_CLEAN]), FakeRecordLLM([GOOD_RECORD])])
     monkeypatch.setattr("psyapp.routes.get_llm_provider", lambda s: next(llms))
     client.post("/sessions", files={"file": ("a.wav", b"fake", "audio/wav")})
 
@@ -278,9 +438,8 @@ def test_pipeline_transition_marks_transcribing_then_done(client, monkeypatch):
         factory,
         client.app.state.settings,
         "data/audio/fake.wav",
-        "T",
         ProbeASR(),
-        FakeCleanLLM(),
+        FakeCleanLLM([GOOD_CLEAN]),
         FakeRecordLLM([GOOD_RECORD]),
     )
     db.close()

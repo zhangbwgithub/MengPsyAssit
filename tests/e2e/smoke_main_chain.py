@@ -5,8 +5,8 @@
 1. 启动后端（默认端口 8661，可 --port 覆盖；DASHSCOPE_API_KEY 从环境继承）
 2. curl 上传 tests/audio/01_normal_dialogue.wav（POST /sessions，multipart）
 3. 轮询 GET /sessions/{id} 至 done（超时 10 分钟）
-4. 断言：status=done、segments≥10 且含 T 与 P、cleaned_text 非空、
-   record 含 summary/counselor_work/client_reported_topics
+4. 断言：status=done、segments≥10 且说话人代号≥2 种、role 含 T 与 P、
+   cleaned_content 非空、record 含 summary/counselor_work/client_reported_topics
 5. 全程响应原文落盘 tests/e2e/results/<时间戳>/
 
 用法：
@@ -181,7 +181,7 @@ def main() -> int:
         audio_bytes = AUDIO.read_bytes()
         write(f"[INFO] 上传音频 {AUDIO}（{len(audio_bytes)} bytes）")
         body, content_type = multipart_body(
-            {"speaker_zero": "T"}, "file", AUDIO.name, audio_bytes
+            {}, "file", AUDIO.name, audio_bytes
         )
         status, upload = http_json(
             "POST",
@@ -223,12 +223,15 @@ def main() -> int:
             failures.append(f"status={final['status']}，期望 done")
         segments = final.get("segments") or []
         speakers = {seg.get("speaker") for seg in segments}
+        roles = {seg.get("role") for seg in segments}
         if len(segments) < 10:
             failures.append(f"segments 数量 {len(segments)} < 10")
-        if not {"T", "P"} <= speakers:
-            failures.append(f"segments 未同时含 T/P 两种说话人，实际={sorted(speakers)}")
-        if not final.get("cleaned_text"):
-            failures.append("cleaned_text 为空")
+        if len(speakers) < 2:
+            failures.append(f"segments 说话人代号种类 {len(speakers)} < 2，实际={sorted(speakers)}")
+        if not {"T", "P"} <= roles:
+            failures.append(f"segments 未同时判定出 T/P 角色，实际={sorted(roles)}")
+        if not all(seg.get("cleaned_content") for seg in segments):
+            failures.append("存在 cleaned_content 为空的 segment")
         record = final.get("record") or {}
         for field in ("summary", "counselor_work", "client_reported_topics"):
             if not record.get(field):
@@ -239,8 +242,8 @@ def main() -> int:
                 write(f"[FAIL] {item}")
             return 1
 
-        write("[PASS] 全部断言通过：done / segments≥10 / T+P / cleaned_text / record 三字段")
-        write(f"[PASS] segments={len(segments)}，speakers={sorted(speakers)}，record.summary 前 80 字={record['summary'][:80]!r}")
+        write("[PASS] 全部断言通过：done / segments≥10 / 代号≥2 / T+P 角色 / cleaned_content / record 三字段")
+        write(f"[PASS] segments={len(segments)}，speakers={sorted(speakers)}，roles={sorted(roles)}，record.summary 前 80 字={record['summary'][:80]!r}")
         return 0
     finally:
         if server is not None and not args.keep_server:
