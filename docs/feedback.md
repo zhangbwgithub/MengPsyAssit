@@ -111,4 +111,33 @@
 
 ---
 
+## FB-005 · 2026-08-28 · cermethod.md 推荐组合调研 + Hermes skill + DeepSeek-v4-flash 清洗模型
+
+### 反馈：调研 cermethod.md 推荐组合是否是好方案；是则做成 Hermes skill；同时启用 DeepSeek-v4-flash 作为清洗模型
+
+**结论：✅ 部分采纳——框架整体不适合直连（离线评测 harness），但其核心方法论极有价值，已蒸馏封装成 skill；清洗模型切换已派单（T-S1.5）**
+
+**调研实证（2026-08-28，大统领）：**
+
+1. **teamtee/LLM-ASR-Error-Correction（★19，华科 Dain 团队）**：精读源码+配置+PromptList 后判定——它是**离线批量评测框架**：需要 gold label（text 文件 + 标签文件）、计算 CER 改进，1758 文件中绝大多数是 AISHELL/Librispeech 实验结果。**无法直接接入我们的在线管线**（我们无 gold label、是 live pipeline）。但其方法论是金子：
+   - **拼音推理链纠错**：定位错字 → 转有声调拼音 → 生成同音候选 → 按上下文选择——专治 ASR 同音字错误（本项目「他/她」类错误的根源）
+   - **保守阈值机制**：读音差别过大/没把握时**保留原文**，用 `<改>/<原>` 标记——防过度改写，与 CoC 阈值思想同源
+   - **实测参数**：temp=0.2 / top_p=0.4、每请求 30 句批量
+   - 实测效果：AISHELL-1 DeepSeek CER -13%（5.17→4.48）
+2. **CoC 阈值思想**：已体现在上述「保守纠错」原则中；两遍清洗管线（TranscriptEnhancer）与本项目单次语义重拼相比性价比低（多一次全量 LLM 调用=耗时翻倍），不采纳。
+3. **ct-punc 标点恢复**：不适用——本项目用云端 paraformer-v2 录音文件识别（自带标点），ct-punc 是本地 FunASR 模型。
+4. **pycorrector**：独立中文纠错库，需额外依赖与模型下载，其能力已被 LLM 清洗覆盖，不采纳。
+5. **关键新发现——deepseek-v4-flash 是推理模型**（大统领实测探针）：
+   - 默认带 thinking：简单纠错请求输出 245 tokens 中 240 个是推理 tokens，3.0s
+   - `thinking: {type: disabled}`：**0.7s**（4.3x 提速），输出质量不变
+   - DeepSeek API 硬性要求：关闭思考时 temperature 必须 = 0.2
+   - `.env` 已有 DEEPSEEK_API_KEY，provider 工厂早已接好（默认模型正是 deepseek-v4-flash）
+
+**处理：**
+- ✅ 封装为 Hermes skill `asr-transcript-cleanup`（teamtee 拼音推理链 + CoC 保守阈值 + zxkane 管线方法论 + 模型接入清单），可复用于任何 ASR 后处理项目
+- ✅ 工作流改进派单 T-S1.5：清洗阶段独立切换到 deepseek-v4-flash（关 thinking、temp=0.2），record 阶段维持 MIMO 不动（陛下 T-S0.6 既定决策）；clean prompt 升 v4 吸收拼音推理链方法论
+- ⏳ 验收标准：陛下真实音频实测耗时对比（基线：59 段 124.8s / 56 段 293.8s，MIMO v3）
+
+---
+
 <!-- 新反馈从这里往上追加，格式参照 FB-001 -->
