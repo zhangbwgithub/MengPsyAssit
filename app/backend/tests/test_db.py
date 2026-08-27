@@ -132,13 +132,14 @@ def test_init_db_heals_missing_columns_in_old_schema(app_settings):
     with engine.connect() as conn:
         columns = [row[1] for row in conn.exec_driver_sql("PRAGMA table_info(sessions)")]
         rows = conn.exec_driver_sql(
-            "SELECT id, user_id, duration_sec, cleaned_text FROM sessions"
+            "SELECT id, user_id, duration_sec, cleaned_text, raw_transcript FROM sessions"
         ).all()
 
     assert "cleaned_text" in columns, f"sessions 未补齐 cleaned_text，实际列={columns}"
+    assert "raw_transcript" in columns, f"sessions 未补齐 raw_transcript，实际列={columns}"
     for column in old_columns:
         assert column in columns, f"旧列 {column} 丢失，实际列={columns}"
-    assert rows == [(7, 1, 0, None)], f"旧数据行受损: {rows}"
+    assert rows == [(7, 1, 0, None, None)], f"旧数据行受损: {rows}"
 
     # 幂等：再跑一次不报错、不重复加列
     init_db(engine, app_settings)

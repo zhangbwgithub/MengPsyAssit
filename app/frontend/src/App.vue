@@ -35,6 +35,53 @@ const statusText = computed(() => {
   return map[sessionStatus.value] || sessionStatus.value || '等待上传'
 })
 
+// 三阶段进度条（纯前端推导，不加接口）：
+// segments 为空 → 阶段1；有 segments 无 record 且未 done → 阶段2；
+// 有 record → 阶段3；done → 全部点亮。failed 按同规则定位失败阶段。
+const PROGRESS_STEP_LABELS = ['转写', '清理与角色判定', '生成记录']
+
+const pipelineStage = computed(() => {
+  if (sessionStatus.value === 'done') return 3
+  const data = sessionData.value
+  if (!data || !data.segments?.length) return 1
+  if (!data.record && sessionStatus.value !== 'done') return 2
+  if (data.record) return 3
+  return 1
+})
+
+const progressSteps = computed(() => {
+  if (!sessionStatus.value) return []
+  const stage = pipelineStage.value
+  const failed = sessionStatus.value === 'failed'
+  return PROGRESS_STEP_LABELS.map((label, idx) => {
+    const num = idx + 1
+    let state = 'pending'
+    if (sessionStatus.value === 'done') {
+      state = 'done'
+    } else if (failed) {
+      if (num < stage) state = 'done'
+      else if (num === stage) state = 'failed'
+    } else if (num < stage) {
+      state = 'done'
+    } else if (num === stage) {
+      state = 'active'
+    }
+    return { label, state }
+  })
+})
+
+// 阶段2（有 segments、尚未判定角色）时使用紧凑气泡显示原始转写
+const hasRoleAssignments = computed(() => {
+  const segments = sessionData.value?.segments || []
+  return segments.length > 0 && segments.some((seg) => seg.role)
+})
+
+const compactTranscript = computed(() => {
+  if (!sessionData.value?.segments?.length) return false
+  if (sessionStatus.value === 'done' || sessionStatus.value === 'failed') return false
+  return pipelineStage.value === 2 && !hasRoleAssignments.value
+})
+
 function onFileChange(event) {
   const chosen = event.target.files?.[0]
   if (!chosen) return
@@ -239,6 +286,18 @@ onUnmounted(stopPolling)
           </button>
         </div>
 
+        <div v-if="progressSteps.length" class="progress-steps">
+          <div
+            v-for="(step, idx) in progressSteps"
+            :key="idx"
+            class="progress-step"
+            :class="step.state"
+          >
+            <span class="progress-dot"></span>
+            <span class="progress-label">{{ step.label }}</span>
+          </div>
+        </div>
+
         <div v-if="sessionStatus" class="status-box">
           <span class="status-label">当前状态：</span>
           <span class="status-value">{{ statusText }}</span>
@@ -256,19 +315,23 @@ onUnmounted(stopPolling)
 
       <!-- 对话稿区 -->
       <section class="card dialogue-card" v-if="bubbleSegments.length">
-        <h2>2. 转写对话稿</h2>
+        <h2>
+          2. 转写对话稿
+          <span v-if="compactTranscript" class="raw-tag">原始转写，正在按语义清理…</span>
+        </h2>
         <div class="segments">
           <div
             v-for="seg in bubbleSegments"
             :key="seg.seq"
             class="segment"
-            :class="alignClassOf(seg)"
+            :class="[alignClassOf(seg), { compact: compactTranscript }]"
           >
-            <div class="bubble" :style="styleOf(seg)">
-              <div class="bubble-header">
+            <div class="bubble" :class="{ compact: compactTranscript }" :style="styleOf(seg)">
+              <div v-if="!compactTranscript" class="bubble-header">
                 <span class="speaker-label">{{ labelOf(seg) }}</span>
                 <span class="time">#{{ seg.seq }} · {{ formatMs(seg.start_ms) }}</span>
               </div>
+              <div v-else class="compact-label">说话人 {{ seg.speaker || '?' }}</div>
               <p class="content">{{ seg.bubbleText }}</p>
             </div>
           </div>
@@ -458,6 +521,60 @@ body {
   gap: 8px;
 }
 
+.progress-steps {
+  margin-top: 14px;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.progress-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: #f3f4f6;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.progress-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #d1d5db;
+}
+
+.progress-step.active {
+  background: #e8f1ff;
+  color: var(--primary-dark);
+  font-weight: 600;
+}
+
+.progress-step.active .progress-dot {
+  background: var(--primary);
+}
+
+.progress-step.done {
+  background: #e8f7f0;
+  color: #146c4b;
+}
+
+.progress-step.done .progress-dot {
+  background: #34b27b;
+}
+
+.progress-step.failed {
+  background: #fef2f2;
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.progress-step.failed .progress-dot {
+  background: var(--danger);
+}
+
 .status-label {
   color: var(--muted);
   font-size: 0.9rem;
@@ -555,6 +672,34 @@ body {
   color: inherit;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* 转写中间态（阶段2、未判定角色）紧凑显示 */
+.raw-tag {
+  margin-left: 8px;
+  font-size: 0.75rem;
+  font-weight: 400;
+  color: var(--muted);
+  vertical-align: middle;
+}
+
+.segment.compact {
+  width: 100%;
+}
+
+.bubble.compact {
+  width: 100%;
+  max-width: 100%;
+  padding: 6px 10px;
+  border-radius: 8px;
+}
+
+.compact-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  opacity: 0.75;
+  margin-bottom: 2px;
+  color: inherit;
 }
 
 .result-block {
