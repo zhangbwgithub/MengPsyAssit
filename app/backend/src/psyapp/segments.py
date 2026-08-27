@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .enums import SegmentSource
 from .models import Segment
 
 _CODE_START = ord("A")
@@ -57,6 +58,35 @@ def apply_segments_to_session(db, session_id: int, user_id: int, segments: list[
                 start_ms=m["start_ms"] or 0,
                 end_ms=m["end_ms"] or 0,
                 confidence=m["confidence"],
+            )
+        )
+    db.flush()
+
+
+def apply_omni_segments_to_session(
+    db, session_id: int, user_id: int, segments: list[dict[str, Any]]
+) -> None:
+    """T-S1.6：把 omni 直转解析出的 segments 落库（幂等：先清空旧数据）。
+
+    与 ASR 路径不同：speaker/role/role_label/cleaned_content 已由解析器填好，
+    这里直接按 seq 重排落库；omni 无时间戳，start_ms/end_ms 存 0。
+    """
+    clear_segments(db, session_id)
+    for seq, seg in enumerate(segments):
+        db.add(
+            Segment(
+                session_id=session_id,
+                user_id=user_id,
+                seq=seq,
+                speaker=seg["speaker"],
+                role=seg["role"],
+                role_label=seg["role_label"],
+                cleaned_content=seg["cleaned_content"],
+                source=SegmentSource.ASR,
+                content=seg["content"],
+                start_ms=seg.get("start_ms") or 0,
+                end_ms=seg.get("end_ms") or 0,
+                confidence=seg.get("confidence"),
             )
         )
     db.flush()
