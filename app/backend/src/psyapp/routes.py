@@ -30,13 +30,23 @@ def _session_factory_of(request: Request):
 def _settings_for_clean(settings: Settings) -> Settings:
     """T-S1.5：clean 阶段独立模型配置。
 
-    clean 用 clean_llm_provider/clean_llm_model 构造 LLM；record 继续用 llm_provider（mimo）。
+    clean 用 clean_llm_provider/clean_llm_model 构造 LLM。
     clean_llm_model 已在 Settings validator 里解析为 provider 默认模型。
     """
     return settings.model_copy(
         update={
             "llm_provider": settings.clean_llm_provider,
             "llm_model": settings.clean_llm_model,
+        }
+    )
+
+
+def _settings_for_record(settings: Settings) -> Settings:
+    """T-S1.5b：record 阶段独立模型配置（与 clean 对称）。"""
+    return settings.model_copy(
+        update={
+            "llm_provider": settings.record_llm_provider,
+            "llm_model": settings.record_llm_model,
         }
     )
 
@@ -89,9 +99,9 @@ async def create_session(
         session_id = session.id
 
         asr = get_asr_provider(settings)
-        # T-S1.5：clean 独立走 clean_llm_provider（默认 deepseek）；record 继续走 llm_provider（mimo）。
+        # T-S1.5b：clean 独立走 clean_llm_provider，record 独立走 record_llm_provider（默认均 deepseek）。
         clean_llm = get_llm_provider(_settings_for_clean(settings))
-        record_llm = get_llm_provider(settings)
+        record_llm = get_llm_provider(_settings_for_record(settings))
         background_tasks.add_task(
             run_background_pipeline,
             session_id,
@@ -101,6 +111,7 @@ async def create_session(
             asr,
             clean_llm,
             record_llm,
+            record_settings=_settings_for_record(settings),
         )
         return ok({"session_id": session_id, "status": SessionStatus.UPLOADING})
     except Exception:

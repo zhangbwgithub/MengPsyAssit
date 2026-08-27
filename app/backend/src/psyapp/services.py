@@ -6,7 +6,8 @@
   每行独立记录 provider 与状态/错误，便于故障定位与追溯。
 - 清理阶段（T-S1.3 起）按语义重拼段落：≤60 段单次调用，>60 段分块调用；
   每块独立判定角色，坏 JSON/校验失败重试 1 次，任一块仍失败则整体失败。
-  T-S1.5 起 clean 阶段走 clean_llm_provider（默认 deepseek）+ clean prompt v4；record 不变。
+  T-S1.5 起 clean 阶段走 clean_llm_provider（默认 deepseek）+ clean prompt v4；
+  T-S1.5b 起 record 阶段走 record_llm_provider（默认 deepseek），record prompt v2 不变。
 - 会话状态机最小版：uploading（创建即写）→ transcribing（后台开始）→ done/failed。
   失败时对应 job.error 记原因；会话可重交（复用 POST /sessions，幂等清空旧 segments）。
 """
@@ -46,6 +47,8 @@ def run_background_pipeline(
     asr: Any,
     clean_llm: Any,
     record_llm: Any,
+    *,
+    record_settings: Settings | None = None,
 ) -> None:
     """S0 主链路后台任务：转写 → segments 落库 → 清理+角色判定 → 记录生成。
 
@@ -53,7 +56,11 @@ def run_background_pipeline(
     任一阶段异常都捕获 → session.status=failed，对应 job.error 记原因。
 
     asr/clean_llm/record_llm 为 provider 实例；测试可传 fake，生产由工厂创建。
+    record_settings：record 阶段独立模型设置（T-S1.5b，deepseek），用于 store_record
+    如实落库 provider/model；缺省时回退为全局 settings（旧调用方/直连测试）。
     """
+    if record_settings is None:
+        record_settings = settings
     db = session_factory()
 
     # ── 转写 ──────────────────────────────────────────────────
@@ -92,7 +99,7 @@ def run_background_pipeline(
     record_job = add_job(db, session_id, JobType.RECORD, record_llm.name)
     db.commit()
     record_data = _generate_record(
-        db, session_id, record_job, settings, cleaned_text, record_llm
+        db, session_id, record_job, record_settings, cleaned_text, record_llm
     )
     if record_data is None:
         _set_session_status(db, session_id, SessionStatus.FAILED)

@@ -89,11 +89,21 @@ def test_factory_explicit_llm_model_overrides_default(tmp_path):
 
 
 def test_clean_llm_provider_defaults_to_deepseek(tmp_path):
-    """T-S1.5：clean 阶段默认 deepseek（deepseek-v4-flash）；record 默认 mimo 不动。"""
+    """T-S1.5：clean 阶段默认 deepseek（deepseek-v4-flash）；全局 llm_provider 仍为 mimo 兜底。"""
     settings = _settings(tmp_path)
     assert settings.clean_llm_provider == "deepseek"
     assert settings.clean_llm_model == "deepseek-v4-flash"
-    # record 阶段继续用 llm_provider/mimo（防回归）
+    # 全局 llm_provider 保留为兜底/未来用途（mimo，T-S0.6 决策）
+    assert settings.llm_provider == "mimo"
+    assert settings.llm_model == "mimo-v2.5-pro"
+
+
+def test_record_llm_provider_defaults_to_deepseek(tmp_path):
+    """T-S1.5b：record 阶段默认 deepseek（deepseek-v4-flash）；全局 llm_provider 仍为 mimo 兜底。"""
+    settings = _settings(tmp_path)
+    assert settings.record_llm_provider == "deepseek"
+    assert settings.record_llm_model == "deepseek-v4-flash"
+    # 全局 llm_provider 保留为兜底/未来用途（mimo，T-S0.6 决策）
     assert settings.llm_provider == "mimo"
     assert settings.llm_model == "mimo-v2.5-pro"
 
@@ -103,6 +113,13 @@ def test_clean_llm_model_explicit_override(tmp_path):
     settings = _settings(tmp_path, clean_llm_provider="qwen", clean_llm_model="qwen-plus")
     assert settings.clean_llm_provider == "qwen"
     assert settings.clean_llm_model == "qwen-plus"
+
+
+def test_record_llm_model_explicit_override(tmp_path):
+    """显式 RECORD_LLM_MODEL 覆盖 record provider 默认模型。"""
+    settings = _settings(tmp_path, record_llm_provider="qwen", record_llm_model="qwen-plus")
+    assert settings.record_llm_provider == "qwen"
+    assert settings.record_llm_model == "qwen-plus"
 
 
 def test_factory_unknown_asr_provider_raises(tmp_path):

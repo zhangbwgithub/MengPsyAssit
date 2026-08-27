@@ -152,8 +152,8 @@ def test_upload_full_chain_creates_segments_clean_and_record(client, monkeypatch
             "[3] B: 就是工作压力大，晚上睡不着。"
         )
         rec = db.query(Record).filter(Record.session_id == session_id).one()
-        assert rec.basic_info["provider"] == "mimo"
-        assert rec.basic_info["model"] == "mimo-v2.5-pro"
+        assert rec.basic_info["provider"] == "deepseek"
+        assert rec.basic_info["model"] == "deepseek-v4-flash"
         assert rec.basic_info["prompt_version"] == "v4"
         jobs = db.query(Job).filter(Job.session_id == session_id).all()
         job_types = {j.type for j in jobs}
@@ -166,19 +166,19 @@ def test_upload_full_chain_creates_segments_clean_and_record(client, monkeypatch
         db.close()
 
 
-def test_clean_uses_deepseek_and_record_uses_mimo(client, monkeypatch):
-    """T-S1.5：clean 按 clean_llm_provider 构造（默认 deepseek），record 仍按 llm_provider（mimo）。"""
+def test_clean_and_record_use_deepseek(client, monkeypatch):
+    """T-S1.5b：clean 按 clean_llm_provider、record 按 record_llm_provider 构造（默认均 deepseek）。"""
     monkeypatch.setattr("psyapp.routes.get_asr_provider", lambda s: FakeASR())
     calls = []
 
     def fake_llm(s):
         calls.append((s.llm_provider, s.llm_model))
-        if s.llm_provider == "deepseek":
+        if len(calls) == 1:
             clean = FakeCleanLLM([GOOD_CLEAN])
             clean.name = "deepseek"
             return clean
         record = FakeRecordLLM([GOOD_RECORD])
-        record.name = "mimo"
+        record.name = "deepseek"
         return record
 
     monkeypatch.setattr("psyapp.routes.get_llm_provider", fake_llm)
@@ -189,10 +189,10 @@ def test_clean_uses_deepseek_and_record_uses_mimo(client, monkeypatch):
     detail = client.get(f"/sessions/{session_id}").json()["data"]
     assert detail["status"] == SessionStatus.DONE
 
-    # 第一次调用给 clean（deepseek），第二次调用给 record（mimo）
+    # 第一次调用给 clean，第二次调用给 record，均为 deepseek
     assert calls == [
         ("deepseek", "deepseek-v4-flash"),
-        ("mimo", "mimo-v2.5-pro"),
+        ("deepseek", "deepseek-v4-flash"),
     ]
 
     from psyapp.db import create_session_factory
@@ -210,9 +210,9 @@ def test_clean_uses_deepseek_and_record_uses_mimo(client, monkeypatch):
             .filter(Job.session_id == session_id, Job.type == "record")
             .one()
         )
-        # jobs 表 clean 行的 provider 字段如实记 deepseek；record 行仍为 mimo
+        # jobs 表 clean/record 行的 provider 字段均如实记 deepseek
         assert clean_job.provider == "deepseek"
-        assert record_job.provider == "mimo"
+        assert record_job.provider == "deepseek"
     finally:
         db.close()
 
