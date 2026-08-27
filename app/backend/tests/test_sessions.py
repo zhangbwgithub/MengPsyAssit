@@ -146,10 +146,10 @@ def test_upload_full_chain_creates_segments_clean_and_record(client, monkeypatch
         assert db.query(Segment).filter(Segment.session_id == session_id).count() == 4
         session = db.get(Session, session_id)
         assert session.raw_transcript == (
-            "A: 你好，最近感觉怎么样？\n"
-            "B: 最近睡眠不太好。\n"
-            "A: 能具体说说吗？\n"
-            "B: 就是工作压力大，晚上睡不着。"
+            "[0] A: 你好，最近感觉怎么样？\n"
+            "[1] B: 最近睡眠不太好。\n"
+            "[2] A: 能具体说说吗？\n"
+            "[3] B: 就是工作压力大，晚上睡不着。"
         )
         rec = db.query(Record).filter(Record.session_id == session_id).one()
         assert rec.basic_info["provider"] == "mimo"
@@ -353,10 +353,10 @@ def test_clean_bad_json_retries_then_failed(client, monkeypatch):
         # 审计底稿：即使 clean 失败，清理前的原始转写稿也已落库
         session = db.get(Session, session_id)
         assert session.raw_transcript == (
-            "A: 你好，最近感觉怎么样？\n"
-            "B: 最近睡眠不太好。\n"
-            "A: 能具体说说吗？\n"
-            "B: 就是工作压力大，晚上睡不着。"
+            "[0] A: 你好，最近感觉怎么样？\n"
+            "[1] B: 最近睡眠不太好。\n"
+            "[2] A: 能具体说说吗？\n"
+            "[3] B: 就是工作压力大，晚上睡不着。"
         )
         clean_job = (
             db.query(Job)
@@ -573,6 +573,26 @@ def test_job_timestamps_written_on_running_and_done(client):
 # ── T-S1.3 语义重拼：碎片合并 / source_seqs 校验 / 分块 ─────────
 
 
+def test_transcript_lines_carry_explicit_seq_numbers():
+    """T-S1.4：转写稿输入必须显式带 [seq] 编号（防回归：禁止回到让 LLM 数行号）。"""
+    from psyapp.segments import build_transcript_lines_from_segments
+
+    segments = [
+        Segment(seq=0, speaker="A", content="你好，最近感觉怎么样？"),
+        Segment(seq=1, speaker="B", content="最近睡眠不太好。"),
+        Segment(seq=2, speaker="A", content="能具体说说吗？"),
+    ]
+    transcript = build_transcript_lines_from_segments(segments)
+    assert transcript == (
+        "[0] A: 你好，最近感觉怎么样？\n"
+        "[1] B: 最近睡眠不太好。\n"
+        "[2] A: 能具体说说吗？"
+    )
+    assert "[0] A:" in transcript
+    assert "[1] B:" in transcript
+    assert "[2] A:" in transcript
+
+
 def test_clean_merges_same_speaker_fragments_into_one_paragraph(client, monkeypatch):
     """3 个同人碎片（含「他→她」指代纠正场景）合并为 1 个 paragraph。"""
     class FragmentASR(FakeASR):
@@ -622,10 +642,14 @@ def test_clean_merges_same_speaker_fragments_into_one_paragraph(client, monkeypa
 
 
 def test_clean_source_seqs_missing_or_duplicate_rejected():
-    """source_seqs 拼接后必须恰好覆盖 0..n-1；缺段/重复都会校验失败。"""
+    """source_seqs 拼接后必须恰好覆盖输入段的 seq；缺段/重复都会校验失败。"""
     from psyapp.services import validate_clean_result
 
-    segments = [Segment(speaker="A"), Segment(speaker="B"), Segment(speaker="B")]
+    segments = [
+        Segment(seq=0, speaker="A"),
+        Segment(seq=1, speaker="B"),
+        Segment(seq=2, speaker="B"),
+    ]
     roles = {
         "A": {"role": "T", "label": "咨询师"},
         "B": {"role": "P", "label": "来访者"},
@@ -674,7 +698,8 @@ def test_clean_chunks_over_60_segments_makes_multiple_calls(client, monkeypatch)
         for local in range(count):
             global_seq = start + local
             speaker = "A" if global_seq % 2 == 0 else "B"
-            paragraphs.append(para(speaker, local, f"第{global_seq}段内容"))
+            # T-S1.4：输入显式带全局 seq，模型直接逐字引用全局编号
+            paragraphs.append(para(speaker, global_seq, f"第{global_seq}段内容"))
         return clean_json(roles, paragraphs)
 
     clean_llm = FakeCleanLLM([chunk_clean(0, 50), chunk_clean(50, 11)])
