@@ -54,10 +54,10 @@ def run_background_pipeline(
     db.commit()
     _set_session_status(db, session_id, SessionStatus.TRANSCRIBING)
     try:
+        mark_job_running(db, transcribe_job.id)
         result = asr.transcribe(audio_path)
         if not result.segments:
             raise RuntimeError("ASR 返回 0 个分段")
-        mark_job_running(db, transcribe_job.id)
         apply_segments_to_session(db, session_id, settings.dev_user_id, result.segments)
         db.commit()
         mark_job_done(db, transcribe_job.id)
@@ -163,7 +163,9 @@ def _apply_clean_result(db, session_id: int, data: dict[str, Any]) -> None:
     """把 clean 结果写回 segments 并做严格校验（raise 即视为该次尝试失败）。
 
     - roles 键必须覆盖输入中出现过的全部代号，role ∈ {T, P}；
-    - cleaned 与 segments 逐段对应（seq 为 0..n-1 且每段 text 为字符串）。
+    - cleaned 与 segments 逐段对应（seq 为 0..n-1 且每段 text 为字符串）；
+    - text 允许为空字符串：纯语气词段（如整段只有"嗯……"）回退保留原 content，
+      避免因模型按规则清成空串而让整次清理失败（FB-002 根因修复）。
     """
     segments = get_segments(db, session_id)
     roles = data["roles"]
@@ -192,14 +194,16 @@ def _apply_clean_result(db, session_id: int, data: dict[str, Any]) -> None:
         if not isinstance(item, dict):
             raise ValueError(f"cleaned[{idx}] 不是对象")
         text = item.get("text")
-        if not isinstance(text, str) or not text:
+        if not isinstance(text, str):
             raise ValueError(f"cleaned[{idx}].text 缺失或非字符串")
 
     for idx, seg in enumerate(segments):
         code_info = roles[seg.speaker]
         seg.role = code_info["role"]
         seg.role_label = code_info["label"]
-        seg.cleaned_content = cleaned[idx]["text"]
+        # 空串容错：纯语气词段保留原始 content，不再抛错导致重试
+        cleaned_text = cleaned[idx]["text"]
+        seg.cleaned_content = cleaned_text if cleaned_text else seg.content
     db.commit()
 
 

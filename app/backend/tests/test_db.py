@@ -68,6 +68,32 @@ def test_init_db_heals_missing_segment_columns(app_settings):
         assert column in columns, f"segments 未补齐 {column}，实际列={columns}"
 
 
+def test_init_db_heals_missing_job_columns(app_settings):
+    """旧 jobs 表（缺 started_at/finished_at）经 init_db 自动补齐（T-S1.2）。"""
+    engine = build_engine(app_settings)
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE jobs (
+                id INTEGER NOT NULL PRIMARY KEY,
+                type VARCHAR(16) NOT NULL,
+                session_id INTEGER NOT NULL,
+                provider VARCHAR(64),
+                status VARCHAR(16) NOT NULL,
+                error TEXT
+            )
+            """
+        )
+
+    init_db(engine, app_settings)
+
+    with engine.connect() as conn:
+        columns = [row[1] for row in conn.exec_driver_sql("PRAGMA table_info(jobs)")]
+
+    for column in ("started_at", "finished_at"):
+        assert column in columns, f"jobs 未补齐 {column}，实际列={columns}"
+
+
 def test_init_db_heals_missing_columns_in_old_schema(app_settings):
     """旧库（sessions 缺 cleaned_text）经 init_db 后自动补齐且原列/原数据完好。"""
     engine = build_engine(app_settings)
