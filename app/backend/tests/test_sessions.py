@@ -101,7 +101,7 @@ def test_upload_full_chain_creates_segments_clean_and_record(client, monkeypatch
     llms = iter([FakeCleanLLM([GOOD_CLEAN]), FakeRecordLLM([GOOD_RECORD])])
     monkeypatch.setattr("psyapp.routes.get_llm_provider", lambda s: next(llms))
 
-    resp = client.post("/sessions", files={"file": ("x.wav", b"fake-wav-bytes", "audio/wav")})
+    resp = client.post("/sessions", files={"file": ("x.wav", b"fake-wav-bytes", "audio/wav")}, data={"mode": "asr"})
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["ok"] is True
@@ -109,6 +109,9 @@ def test_upload_full_chain_creates_segments_clean_and_record(client, monkeypatch
 
     detail = client.get(f"/sessions/{session_id}").json()["data"]
     assert detail["status"] == SessionStatus.DONE
+    # T-S1.6：显式 asr 模式 → GET 返回 pipeline_mode/model_display
+    assert detail["pipeline_mode"] == "asr"
+    assert detail["model_display"] == "paraformer-v2 + deepseek-v4-flash"
     assert len(detail["segments"]) == 4
     # 代号按首现序 A/B，角色由 clean 阶段判定写回
     speakers = {seg["speaker"] for seg in detail["segments"]}
@@ -183,7 +186,7 @@ def test_clean_and_record_use_deepseek(client, monkeypatch):
 
     monkeypatch.setattr("psyapp.routes.get_llm_provider", fake_llm)
 
-    resp = client.post("/sessions", files={"file": ("x.wav", b"fake-wav-bytes", "audio/wav")})
+    resp = client.post("/sessions", files={"file": ("x.wav", b"fake-wav-bytes", "audio/wav")}, data={"mode": "asr"})
     assert resp.status_code == 200, resp.text
     session_id = resp.json()["data"]["session_id"]
     detail = client.get(f"/sessions/{session_id}").json()["data"]
@@ -228,7 +231,7 @@ def test_upload_ignores_extra_form_fields(client, monkeypatch):
     resp = client.post(
         "/sessions",
         files={"file": ("x.wav", b"fake", "audio/wav")},
-        data={legacy_mapping_field: "P"},
+        data={"mode": "asr", legacy_mapping_field: "P"},
     )
     assert resp.status_code == 200, resp.text
     session_id = resp.json()["data"]["session_id"]
@@ -269,7 +272,7 @@ def test_three_speaker_role_assignment(client, monkeypatch):
     llms = iter([FakeCleanLLM([clean]), FakeRecordLLM([GOOD_RECORD])])
     monkeypatch.setattr("psyapp.routes.get_llm_provider", lambda s: next(llms))
 
-    resp = client.post("/sessions", files={"file": ("x.wav", b"fake", "audio/wav")})
+    resp = client.post("/sessions", files={"file": ("x.wav", b"fake", "audio/wav")}, data={"mode": "asr"})
     session_id = resp.json()["data"]["session_id"]
     detail = client.get(f"/sessions/{session_id}").json()["data"]
 
@@ -312,7 +315,7 @@ def test_clean_pure_filler_segment_merges_into_neighbor(client, monkeypatch):
     llms = iter([FakeCleanLLM([clean]), FakeRecordLLM([GOOD_RECORD])])
     monkeypatch.setattr("psyapp.routes.get_llm_provider", lambda s: next(llms))
 
-    resp = client.post("/sessions", files={"file": ("x.wav", b"fake", "audio/wav")})
+    resp = client.post("/sessions", files={"file": ("x.wav", b"fake", "audio/wav")}, data={"mode": "asr"})
     session_id = resp.json()["data"]["session_id"]
     detail = client.get(f"/sessions/{session_id}").json()["data"]
 
@@ -371,7 +374,7 @@ def test_clean_returns_fields_null_before_clean_stage(client, monkeypatch):
         lambda s: FakeCleanLLM(["not json", "still not json"]),
     )
 
-    resp = client.post("/sessions", files={"file": ("x.wav", b"fake", "audio/wav")})
+    resp = client.post("/sessions", files={"file": ("x.wav", b"fake", "audio/wav")}, data={"mode": "asr"})
     session_id = resp.json()["data"]["session_id"]
     detail = client.get(f"/sessions/{session_id}").json()["data"]
     assert detail["status"] == SessionStatus.FAILED
@@ -389,7 +392,7 @@ def test_clean_bad_json_retries_then_failed(client, monkeypatch):
         lambda s: FakeCleanLLM(["### not json at all", "still not json"]),
     )
 
-    resp = client.post("/sessions", files={"file": ("x.wav", b"fake", "audio/wav")})
+    resp = client.post("/sessions", files={"file": ("x.wav", b"fake", "audio/wav")}, data={"mode": "asr"})
     session_id = resp.json()["data"]["session_id"]
     detail = client.get(f"/sessions/{session_id}").json()["data"]
     assert detail["status"] == SessionStatus.FAILED
@@ -441,7 +444,7 @@ def test_clean_missing_speaker_code_retries_then_failed(client, monkeypatch):
         lambda s: FakeCleanLLM([incomplete, incomplete]),
     )
 
-    resp = client.post("/sessions", files={"file": ("x.wav", b"fake", "audio/wav")})
+    resp = client.post("/sessions", files={"file": ("x.wav", b"fake", "audio/wav")}, data={"mode": "asr"})
     session_id = resp.json()["data"]["session_id"]
     detail = client.get(f"/sessions/{session_id}").json()["data"]
     assert detail["status"] == SessionStatus.FAILED
@@ -472,7 +475,7 @@ def test_bad_record_json_retries_then_failed(client, monkeypatch):
     )
     monkeypatch.setattr("psyapp.routes.get_llm_provider", lambda s: next(llms))
 
-    resp = client.post("/sessions", files={"file": ("x.wav", b"fake", "audio/wav")})
+    resp = client.post("/sessions", files={"file": ("x.wav", b"fake", "audio/wav")}, data={"mode": "asr"})
     session_id = resp.json()["data"]["session_id"]
     detail = client.get(f"/sessions/{session_id}").json()["data"]
     assert detail["status"] == SessionStatus.FAILED
@@ -504,7 +507,7 @@ def test_record_json_recovers_on_second_attempt(client, monkeypatch):
     )
     monkeypatch.setattr("psyapp.routes.get_llm_provider", lambda s: next(llms))
 
-    resp = client.post("/sessions", files={"file": ("x.wav", b"fake", "audio/wav")})
+    resp = client.post("/sessions", files={"file": ("x.wav", b"fake", "audio/wav")}, data={"mode": "asr"})
     session_id = resp.json()["data"]["session_id"]
     detail = client.get(f"/sessions/{session_id}").json()["data"]
     assert detail["status"] == SessionStatus.DONE
@@ -515,7 +518,7 @@ def test_session_list_returns_dev_sessions(client, monkeypatch):
     monkeypatch.setattr("psyapp.routes.get_asr_provider", lambda s: FakeASR())
     llms = iter([FakeCleanLLM([GOOD_CLEAN]), FakeRecordLLM([GOOD_RECORD])])
     monkeypatch.setattr("psyapp.routes.get_llm_provider", lambda s: next(llms))
-    client.post("/sessions", files={"file": ("a.wav", b"fake", "audio/wav")})
+    client.post("/sessions", files={"file": ("a.wav", b"fake", "audio/wav")}, data={"mode": "asr"})
 
     resp = client.get("/sessions")
     assert resp.status_code == 200
@@ -674,7 +677,7 @@ def test_clean_merges_same_speaker_fragments_into_one_paragraph(client, monkeypa
     llms = iter([FakeCleanLLM([clean]), FakeRecordLLM([GOOD_RECORD])])
     monkeypatch.setattr("psyapp.routes.get_llm_provider", lambda s: next(llms))
 
-    resp = client.post("/sessions", files={"file": ("x.wav", b"fake", "audio/wav")})
+    resp = client.post("/sessions", files={"file": ("x.wav", b"fake", "audio/wav")}, data={"mode": "asr"})
     session_id = resp.json()["data"]["session_id"]
     detail = client.get(f"/sessions/{session_id}").json()["data"]
 
@@ -758,7 +761,7 @@ def test_clean_chunks_over_60_segments_makes_multiple_calls(client, monkeypatch)
     llms = iter([clean_llm, FakeRecordLLM([GOOD_RECORD])])
     monkeypatch.setattr("psyapp.routes.get_llm_provider", lambda s: next(llms))
 
-    resp = client.post("/sessions", files={"file": ("x.wav", b"fake", "audio/wav")})
+    resp = client.post("/sessions", files={"file": ("x.wav", b"fake", "audio/wav")}, data={"mode": "asr"})
     session_id = resp.json()["data"]["session_id"]
     detail = client.get(f"/sessions/{session_id}").json()["data"]
 

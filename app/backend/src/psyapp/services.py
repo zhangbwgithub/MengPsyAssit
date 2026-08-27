@@ -20,11 +20,13 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .config import Settings
-from .enums import JobType, Role, SessionStatus
+from .enums import JobType, PipelineMode, Role, SessionStatus
 from .jobs import add_job, mark_job_done, mark_job_failed, mark_job_running
 from .models import Record, Segment, Session
 from .prompts import render_prompt
+from .providers.omni import OMNI_TRANSCRIBE_PROMPT, parse_omni_transcript
 from .segments import (
+    apply_omni_segments_to_session,
     apply_segments_to_session,
     build_cleaned_text,
     build_transcript_lines_from_segments,
@@ -48,20 +50,40 @@ def run_background_pipeline(
     clean_llm: Any,
     record_llm: Any,
     *,
+    pipeline_mode: str = PipelineMode.ASR,
+    omni: Any = None,
     record_settings: Settings | None = None,
 ) -> None:
-    """S0 主链路后台任务：转写 → segments 落库 → 清理+角色判定 → 记录生成。
+    """S0 主链路后台任务：按 pipeline_mode 分叉执行。
+
+    - asr（现状完全不变）：转写 → segments 落库 → 清理+角色判定 → 记录生成。
+    - omni（T-S1.6）：qwen3.5-omni-plus 直转（转写+清理+角色判定一步到位）
+      → segments 落库 → 记录生成（deepseek，输入=按 segments 拼的清理稿）。
+      无 clean 阶段，不建 clean job。
 
     幂等：支持同一会话重交（失败/无 segments 时重跑，旧 segments 先清空）。
     任一阶段异常都捕获 → session.status=failed，对应 job.error 记原因。
 
     asr/clean_llm/record_llm 为 provider 实例；测试可传 fake，生产由工厂创建。
+    omni 为 QwenOmniLLM 实例（omni 模式必传）。
     record_settings：record 阶段独立模型设置（T-S1.5b，deepseek），用于 store_record
     如实落库 provider/model；缺省时回退为全局 settings（旧调用方/直连测试）。
     """
     if record_settings is None:
         record_settings = settings
     db = session_factory()
+
+    if pipeline_mode == PipelineMode.OMNI:
+        _run_omni_pipeline(
+            db,
+            session_id,
+            settings,
+            audio_path,
+            omni,
+            record_llm,
+            record_settings,
+        )
+        return
 
     # ── 转写 ──────────────────────────────────────────────────
     transcribe_job = add_job(db, session_id, JobType.TRANSCRIBE, asr.name)
@@ -96,6 +118,81 @@ def run_background_pipeline(
     db.commit()
 
     # ── 记录（一次整体调用，坏 JSON 重试 1 次，成功落库）──────
+    record_job = add_job(db, session_id, JobType.RECORD, record_llm.name)
+    db.commit()
+    record_data = _generate_record(
+        db, session_id, record_job, record_settings, cleaned_text, record_llm
+    )
+    if record_data is None:
+        _set_session_status(db, session_id, SessionStatus.FAILED)
+        db.close()
+        return
+
+    _set_session_status(db, session_id, SessionStatus.DONE)
+    db.close()
+
+
+def _run_omni_pipeline(
+    db,
+    session_id: int,
+    settings: Settings,
+    audio_path: str,
+    omni: Any,
+    record_llm: Any,
+    record_settings: Settings,
+) -> None:
+    """omni 路径：直转（重试 1 次）→ segments 落库 → 记录生成（deepseek）。
+
+    - transcribe job 内调 QwenOmniLLM.transcribe_audio，provider 记 qwen3.5-omni-plus。
+    - raw_transcript 存 omni 原始输出；解析出 0 轮视为失败并重试 1 次。
+    - 无 clean 阶段（不建 clean job）；record 阶段与 asr 路径完全一致。
+    """
+    if omni is None:
+        raise RuntimeError("omni 模式缺少 omni provider")
+
+    transcribe_job = add_job(db, session_id, JobType.TRANSCRIBE, omni.name)
+    db.commit()
+    _set_session_status(db, session_id, SessionStatus.TRANSCRIBING)
+
+    last_error: str | None = None
+    for attempt in (1, 2):
+        try:
+            mark_job_running(db, transcribe_job.id)
+            raw_text = omni.transcribe_audio(audio_path, OMNI_TRANSCRIBE_PROMPT)
+            session = db.get(Session, session_id)
+            if session is not None:
+                session.raw_transcript = raw_text
+                db.commit()
+            segments = parse_omni_transcript(raw_text)
+            if not segments:
+                raise RuntimeError("omni 输出解析出 0 轮")
+            apply_omni_segments_to_session(
+                db, session_id, settings.dev_user_id, segments
+            )
+            db.commit()
+            mark_job_done(db, transcribe_job.id)
+            break
+        except Exception as exc:  # noqa: BLE001 —— 主链路任何失败都收敛为 failed
+            last_error = f"{type(exc).__name__}: {exc}"
+            logger.warning(
+                "会话 %s omni 转写失败（第 %d 次）: %s", session_id, attempt, exc
+            )
+    else:
+        mark_job_failed(
+            db, transcribe_job.id, f"omni 转写失败（重试后仍失败）: {last_error}"
+        )
+        _set_session_status(db, session_id, SessionStatus.FAILED)
+        db.close()
+        return
+
+    # 清理稿：omni 无 clean 阶段，直接按 segments 拼（record 阶段输入，同 asr 语义）
+    cleaned_text = build_cleaned_text(db, session_id)
+    session = db.get(Session, session_id)
+    if session is not None:
+        session.cleaned_text = cleaned_text
+    db.commit()
+
+    # ── 记录（同 asr：deepseek，坏 JSON 重试 1 次，成功落库）──────
     record_job = add_job(db, session_id, JobType.RECORD, record_llm.name)
     db.commit()
     record_data = _generate_record(

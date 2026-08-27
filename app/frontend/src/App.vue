@@ -22,30 +22,45 @@ const sessionId = ref(null)
 const sessionStatus = ref('')
 const sessionData = ref(null)
 const pollTimer = ref(null)
+// T-S1.6：上传可选管线模式；默认多模态直转（推荐）
+const selectedMode = ref('omni')
 
 const acceptedTypes = ALLOWED_EXTS.join(',')
+
+// 管线模式：会话详情返回后以服务端 pipeline_mode 为准，未返回前用用户选择
+const pipelineMode = computed(
+  () => sessionData.value?.pipeline_mode || selectedMode.value
+)
 
 const statusText = computed(() => {
   const map = {
     uploading: '正在上传音频…',
-    transcribing: '正在转写与生成记录…',
+    transcribing:
+      pipelineMode.value === 'omni'
+        ? '正在多模态直转与生成记录…'
+        : '正在转写与生成记录…',
     done: '处理完成',
     failed: '处理失败',
   }
   return map[sessionStatus.value] || sessionStatus.value || '等待上传'
 })
 
-// 三阶段进度条（纯前端推导，不加接口）：
+// 进度条按模式自适应：omni 两阶段「多模态直转 → 生成记录」；asr 维持三阶段。
 // segments 为空 → 阶段1；有 segments 无 record 且未 done → 阶段2；
-// 有 record → 阶段3；done → 全部点亮。failed 按同规则定位失败阶段。
-const PROGRESS_STEP_LABELS = ['转写', '清理与角色判定', '生成记录']
+// 有 record → 末阶段；done → 全部点亮。failed 按同规则定位失败阶段。
+const progressLabels = computed(() =>
+  pipelineMode.value === 'omni'
+    ? ['多模态直转', '生成记录']
+    : ['转写', '清理与角色判定', '生成记录']
+)
 
 const pipelineStage = computed(() => {
-  if (sessionStatus.value === 'done') return 3
+  const count = progressLabels.value.length
+  if (sessionStatus.value === 'done') return count
   const data = sessionData.value
   if (!data || !data.segments?.length) return 1
   if (!data.record && sessionStatus.value !== 'done') return 2
-  if (data.record) return 3
+  if (data.record) return count
   return 1
 })
 
@@ -53,7 +68,7 @@ const progressSteps = computed(() => {
   if (!sessionStatus.value) return []
   const stage = pipelineStage.value
   const failed = sessionStatus.value === 'failed'
-  return PROGRESS_STEP_LABELS.map((label, idx) => {
+  return progressLabels.value.map((label, idx) => {
     const num = idx + 1
     let state = 'pending'
     if (sessionStatus.value === 'done') {
@@ -107,6 +122,7 @@ async function upload() {
   try {
     const form = new FormData()
     form.append('file', file.value)
+    form.append('mode', selectedMode.value)
     const res = await fetch('/api/sessions', { method: 'POST', body: form })
     const json = await res.json()
     if (!json.ok) {
@@ -236,10 +252,16 @@ function alignClassOf(seg) {
   return speakerIndex(seg.speaker) % 2 === 0 ? 'align-left' : 'align-right'
 }
 
+// omni 直转无时间戳，气泡头不渲染时间行
+const showTimestamps = computed(() => pipelineMode.value !== 'omni')
+
 const metaInfoText = computed(() => {
   const info = sessionData.value?.record?.basic_info
   if (!info) return ''
   const parts = []
+  if (sessionData.value?.model_display) {
+    parts.push(`处理管线：${sessionData.value.model_display}`)
+  }
   if (info.model) parts.push(`模型：${info.model}`)
   if (info.prompt_version) parts.push(`提示词版本：${info.prompt_version}`)
   if (info.session_id) parts.push(`会话编号：#${info.session_id}`)
@@ -260,6 +282,44 @@ onUnmounted(stopPolling)
       <!-- 上传区 -->
       <section class="card upload-card">
         <h2>1. 上传咨询录音</h2>
+
+        <div class="mode-selector">
+          <label
+            class="mode-option"
+            :class="{ selected: selectedMode === 'omni' }"
+          >
+            <input
+              type="radio"
+              value="omni"
+              v-model="selectedMode"
+              :disabled="uploading"
+            />
+            <span class="mode-option-body">
+              <span class="mode-title">多模态直转（推荐）</span>
+              <span class="mode-model">模型 <code>qwen3.5-omni-plus</code></span>
+              <span class="mode-desc">音频直接听写+清理+角色判定，约 10 秒出稿</span>
+            </span>
+          </label>
+          <label
+            class="mode-option"
+            :class="{ selected: selectedMode === 'asr' }"
+          >
+            <input
+              type="radio"
+              value="asr"
+              v-model="selectedMode"
+              :disabled="uploading"
+            />
+            <span class="mode-option-body">
+              <span class="mode-title">ASR + LLM 管线</span>
+              <span class="mode-model">
+                ASR <code>paraformer-v2</code> · 清理 <code>deepseek-v4-flash</code>
+              </span>
+              <span class="mode-desc">带时间戳，实时录音场景（未来）</span>
+            </span>
+          </label>
+        </div>
+
         <div class="form-row">
           <label class="file-input">
             <input
@@ -317,6 +377,9 @@ onUnmounted(stopPolling)
       <section class="card dialogue-card" v-if="bubbleSegments.length">
         <h2>
           2. 转写对话稿
+          <span v-if="sessionData?.model_display" class="model-tag">
+            {{ sessionData.model_display }}
+          </span>
           <span v-if="compactTranscript" class="raw-tag">原始转写，正在按语义清理…</span>
         </h2>
         <div class="segments">
@@ -329,7 +392,9 @@ onUnmounted(stopPolling)
             <div class="bubble" :class="{ compact: compactTranscript }" :style="styleOf(seg)">
               <div v-if="!compactTranscript" class="bubble-header">
                 <span class="speaker-label">{{ labelOf(seg) }}</span>
-                <span class="time">#{{ seg.seq }} · {{ formatMs(seg.start_ms) }}</span>
+                <span v-if="showTimestamps" class="time">
+                  #{{ seg.seq }} · {{ formatMs(seg.start_ms) }}
+                </span>
               </div>
               <div v-else class="compact-label">说话人 {{ seg.speaker || '?' }}</div>
               <p class="content">{{ seg.bubbleText }}</p>
@@ -455,6 +520,74 @@ body {
   flex-wrap: wrap;
   align-items: center;
   gap: 10px;
+}
+
+.mode-selector {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.mode-option {
+  flex: 1 1 240px;
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 12px;
+  cursor: pointer;
+  background: #fff;
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.mode-option.selected {
+  border-color: var(--primary);
+  background: #f5f9ff;
+}
+
+.mode-option input[type='radio'] {
+  margin-top: 3px;
+  accent-color: var(--primary);
+}
+
+.mode-option-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.mode-title {
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+.mode-model {
+  color: var(--primary-dark);
+  font-size: 0.82rem;
+}
+
+.mode-model code {
+  background: #eef2ff;
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+
+.mode-desc {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.model-tag {
+  margin-left: 8px;
+  font-size: 0.75rem;
+  font-weight: 400;
+  color: var(--primary-dark);
+  background: #eef2ff;
+  border-radius: 999px;
+  padding: 2px 8px;
+  vertical-align: middle;
 }
 
 .file-input {

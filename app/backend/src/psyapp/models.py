@@ -55,6 +55,8 @@ class Session(Base):
         ForeignKey("clients.id"), nullable=True, index=True
     )
     mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    # T-S1.6：双模式管线（omni=多模态直转 / asr=paraformer+LLM）；旧数据无值按 asr 展示
+    pipeline_mode: Mapped[str | None] = mapped_column(String(8), nullable=True)
     status: Mapped[str] = mapped_column(
         String(16), nullable=False, default=SessionStatus.RECORDING
     )

@@ -11,6 +11,13 @@ class SessionMode:
     MEETING = "meeting"
 
 
+class PipelineMode:
+    """T-S1.6：双模式管线。omni=Qwen3.5-Omni-Plus 多模态直转；asr=paraformer+LLM 管线。"""
+
+    OMNI = "omni"
+    ASR = "asr"
+
+
 class SessionStatus:
     RECORDING = "recording"
     UPLOADING = "uploading"
