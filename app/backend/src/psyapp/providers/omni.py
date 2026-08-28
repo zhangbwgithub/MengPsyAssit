@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -97,6 +98,7 @@ class QwenOmniLLM(OpenAICompatLLM):
             ],
             "modalities": ["text"],
             "enable_thinking": False,
+            "temperature": 0.0,
         }
         payload = self._post_chat(body)
         try:
@@ -117,6 +119,28 @@ class QwenOmniLLM(OpenAICompatLLM):
 
 
 # ── omni 轮次文本解析 ────────────────────────────────────────────────
+
+# 称呼语铁证：内容以「X老师」+标点开头即是在称呼对方为老师，
+# 说话人一定不是该老师本人。若被标成「咨询师」，说明全篇角色已翻转。
+_ADDRESS_FLIP_RE = re.compile(r"^[\u4e00-\u9fa5A-Za-z]{1,6}老师[，,？！!?。.]")
+
+
+def fix_role_flip_by_address(
+    turns: list[tuple[str, str]],
+) -> list[tuple[str, str]]:
+    """称呼语翻转校正：任何「咨询师」轮以「X老师」称呼对方开头 → 全篇角色对调。
+
+    输入/输出均为 (role_label, content) 列表。命中一次即互换所有「咨询师」↔「来访者」，
+    其他角色标签不动；未命中原样返回。
+    """
+    flipped = any(
+        role == "咨询师" and _ADDRESS_FLIP_RE.match(content)
+        for role, content in turns
+    )
+    if not flipped:
+        return turns
+    swap = {"咨询师": "来访者", "来访者": "咨询师"}
+    return [(swap.get(role, role), content) for role, content in turns]
 
 
 def _split_role_content(seq: int, role_and_content: str) -> tuple[int, str, str] | None:
@@ -161,13 +185,12 @@ def parse_omni_transcript(text: str) -> list[dict[str, Any]]:
     """逐行解析 omni 直转输出，返回可直接落库的 segment dict 列表。
 
     - 空行跳过；无法解析的行跳过（模型可能输出围栏/前言）。
+    - 称呼语翻转校正：角色映射前先跑 fix_role_flip_by_address 确定性兜底。
     - 角色映射：咨询师→T、来访者→P；其他角色文本归 P 兜底并保留原词为 role_label。
     - speaker 代号按角色标签首现序分配 A/B/C…（沿用现有 assign_speaker_codes 规则）。
     - seq 从 0 重排；content=cleaned_content=该行内容；start_ms/end_ms=None。
     """
-    segments: list[dict[str, Any]] = []
-    code_by_label: dict[str, str] = {}
-    next_code = 0
+    turns: list[tuple[str, str]] = []
 
     for raw_line in text.splitlines():
         line = raw_line.strip()
@@ -183,7 +206,15 @@ def parse_omni_transcript(text: str) -> list[dict[str, Any]]:
         role_label = _normalize_role_text(role_text)
         if not role_label:
             continue
+        turns.append((role_label, content))
 
+    turns = fix_role_flip_by_address(turns)
+
+    segments: list[dict[str, Any]] = []
+    code_by_label: dict[str, str] = {}
+    next_code = 0
+
+    for role_label, content in turns:
         role = Role.THERAPIST if role_label == "咨询师" else Role.PATIENT
         if role_label not in code_by_label:
             code_by_label[role_label] = chr(ord("A") + next_code)

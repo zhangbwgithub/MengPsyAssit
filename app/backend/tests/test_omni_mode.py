@@ -14,6 +14,7 @@ from psyapp.models import Job, Session
 from psyapp.providers.omni import (
     OMNI_TRANSCRIBE_PROMPT,
     QwenOmniLLM,
+    fix_role_flip_by_address,
     parse_omni_transcript,
 )
 
@@ -106,6 +107,55 @@ def test_parse_omni_transcript_skips_blank_and_unparseable_lines():
     assert len(segments) == 2
     assert [seg["speaker"] for seg in segments] == ["A", "B"]
     assert segments[0]["content"] == "你好。"
+
+
+# ── 称呼语翻转校正（T-S1.8 确定性兜底）───────────────────────────────
+
+
+def test_flip_address_triggers_reversal_when_therapist_round_addresses_teacher():
+    """「咨询师」轮以「X老师，」开头称呼对方 → 全篇角色对调，speaker 代号也随校正后的角色分配。"""
+    text = (
+        "1\t咨询师\t雨生老师，你怎么从来都不休假\n"
+        "2\t来访者\t工作安排比较满。\n"
+        "3\t咨询师\t那你也要注意休息。\n"
+    )
+    segments = parse_omni_transcript(text)
+
+    assert [seg["role"] for seg in segments] == ["P", "T", "P"]
+    assert [seg["role_label"] for seg in segments] == ["来访者", "咨询师", "来访者"]
+    assert [seg["speaker"] for seg in segments] == ["A", "B", "A"]
+
+
+def test_no_flip_when_patient_addresses_therapist():
+    """来访者称呼咨询师为老师是正常语态：规则不误触发，解析零变化。"""
+    text = (
+        "1\t咨询师\t你好，最近感觉怎么样？\n"
+        "2\t来访者\t王老师，我最近睡不好。\n"
+        "3\t咨询师\t能具体说说吗？\n"
+    )
+    segments = parse_omni_transcript(text)
+
+    assert [seg["role"] for seg in segments] == ["T", "P", "T"]
+    assert [seg["role_label"] for seg in segments] == ["咨询师", "来访者", "咨询师"]
+    assert [seg["speaker"] for seg in segments] == ["A", "B", "A"]
+
+
+def test_no_flip_when_teacher_mentioned_but_not_addressed():
+    """正文提及「老师」但不在句首称呼位：不触发，零变化。"""
+    text = (
+        "1\t咨询师\t你刚才提到老师说的那句话\n"
+        "2\t来访者\t是的。\n"
+    )
+    segments = parse_omni_transcript(text)
+
+    assert [seg["role"] for seg in segments] == ["T", "P"]
+    assert [seg["role_label"] for seg in segments] == ["咨询师", "来访者"]
+    assert [seg["speaker"] for seg in segments] == ["A", "B"]
+
+
+def test_fix_role_flip_by_address_returns_same_list_when_no_trigger():
+    turns = [("咨询师", "你好"), ("来访者", "老师，我最近睡不好")]
+    assert fix_role_flip_by_address(turns) == turns
 
 
 # ── 路由：mode 契约 ──────────────────────────────────────────────
@@ -225,6 +275,7 @@ def test_qwen_omni_transcribe_audio_builds_probe_request(tmp_path):
     assert body["model"] == "qwen3.5-omni-plus"
     assert body["modalities"] == ["text"]
     assert body["enable_thinking"] is False
+    assert body["temperature"] == 0.0
     content = body["messages"][0]["content"]
     assert content[0]["type"] == "input_audio"
     assert content[0]["input_audio"]["format"] == "mp3"
