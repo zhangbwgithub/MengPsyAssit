@@ -2,12 +2,13 @@
 
 > 工作流 §6：增量收尾及会话压缩前必答四问。最后更新：2026-08-27 大统领
 
-## 当前状态：S1 进行中——T-S1.1~S1.6 七卡连发 ✅ 合 main（2026-08-27/28），双模式管线上线，反馈台账运行中（FB-001~008）
+## 当前状态：S1 进行中——T-S1.1~S1.7 八卡连发 ✅ 合 main（2026-08-27/28），双模式管线 + omni prompt v2 上线，反馈台账运行中（FB-001~009）
 
 ### 进行中
 - （无进行中任务卡）
 
 ### 已完成（S1）
+- **T-S1.7 omni prompt 升 v2** ✅：`OMNI_TRANSCRIBE_PROMPT` 换称呼语铁证锚定版（FB-009 陛下拍板）。大统领实测：门禁 54 pytest + ruff + 前端构建全过；**05号对抗音频线上 omni 模式角色正确率 24%→81%（21对/5错，与探针两次复跑完全一致）**，剩余错误集中在 #13/#17-20 内容歧义区（ASR 管线同样错，非 prompt 可解）；01号常规音频回归正常（8轮、角色4/4、记录三字段齐全）。
 - **T-S1.6 双模式管线** ✅：`qwen3.5-omni-plus` 多模态直转（默认）+ ASR 管线（paraformer+deepseek，未来实时录音入口）并存；上传可选模式、显式标模型；omni 无时间戳、两阶段进度条。merge `见git log`；大统领实测：54 pytest + 陛下真实音频 omni 实测 5s 出 17 轮（与探针一致）+ 浏览器双模式复验全过（选择器/模型名/进度条/375px）。
 - **T-S1.5 + T-S1.5b 清洗/记录模型切换** ✅：clean+record 全链切 `deepseek-v4-flash`（关 thinking、temp 锁 0.2），clean prompt 升 v4（拼音推理链），`clean_llm_*`/`record_llm_*` 独立配置、全局 `llm_provider`(mimo) 保留兜底。merge `25884b9`；大统领实测：46 pytest + 陛下 56 段音频重跑——**clean 294s→8s（37x）、record 48s→3s（16x）、总 352s→21s**，质量不降（她27他0、记录三字段齐全、prompt v4、provider 如实落库）。调研支撑：FB-005（teamtee/CoC/zxkane 蒸馏，skill `asr-transcript-cleanup` 已建）。
 - **T-S1.4 显式 seq 编号修复** ✅：clean 输入改 `[seq] 代号: 文本`（分块路径全局口径）+ prompt 明确逐字引用编号。merge `d1b96e0`；大统领实测：40 pytest + 陛下 56 段失败音频重跑 done（44 段重组、她25他0）。注：首次重跑撞阿里云 DashScope 云端瞬时故障（SERVER_ERROR，转写阶段），重试即过——云端偶发故障非代码问题，但暴露「转写阶段无自动重试」短板，可作后续优化候选。
