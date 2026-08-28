@@ -109,11 +109,11 @@ def test_parse_omni_transcript_skips_blank_and_unparseable_lines():
     assert segments[0]["content"] == "你好。"
 
 
-# ── 称呼语翻转校正（T-S1.8 确定性兜底）───────────────────────────────
+# ── 称呼语局部改标（T-S1.9 修复 T-S1.8 全篇翻转误伤）─────────────────
 
 
-def test_flip_address_triggers_reversal_when_therapist_round_addresses_teacher():
-    """「咨询师」轮以「X老师，」开头称呼对方 → 全篇角色对调，speaker 代号也随校正后的角色分配。"""
+def test_fix_address_relabels_only_matching_therapist_round():
+    """「咨询师」轮以「X老师，」开头称呼对方 → 仅该轮改为来访者，其余轮次不做全篇对调。"""
     text = (
         "1\t咨询师\t雨生老师，你怎么从来都不休假\n"
         "2\t来访者\t工作安排比较满。\n"
@@ -121,9 +121,35 @@ def test_flip_address_triggers_reversal_when_therapist_round_addresses_teacher()
     )
     segments = parse_omni_transcript(text)
 
-    assert [seg["role"] for seg in segments] == ["P", "T", "P"]
-    assert [seg["role_label"] for seg in segments] == ["来访者", "咨询师", "来访者"]
-    assert [seg["speaker"] for seg in segments] == ["A", "B", "A"]
+    assert [seg["role"] for seg in segments] == ["P", "P", "T"]
+    assert [seg["role_label"] for seg in segments] == ["来访者", "来访者", "咨询师"]
+    assert [seg["speaker"] for seg in segments] == ["A", "A", "B"]
+
+
+def test_fix_address_relabels_each_matching_therapist_round():
+    """两个「咨询师」轮都以「X老师，」开头 → 两轮都改标来访者，其余轮次不动。"""
+    text = (
+        "1\t咨询师\t雨生老师，你怎么从来都不休假\n"
+        "2\t来访者\t工作安排比较满。\n"
+        "3\t咨询师\t王老师，你也要注意休息。\n"
+        "4\t咨询师\t好的，我们下次再聊。\n"
+    )
+    segments = parse_omni_transcript(text)
+
+    assert [seg["role"] for seg in segments] == ["P", "P", "P", "T"]
+    assert [seg["role_label"] for seg in segments] == [
+        "来访者",
+        "来访者",
+        "来访者",
+        "咨询师",
+    ]
+    assert [seg["speaker"] for seg in segments] == ["A", "A", "A", "B"]
+    assert [seg["content"] for seg in segments] == [
+        "雨生老师，你怎么从来都不休假",
+        "工作安排比较满。",
+        "王老师，你也要注意休息。",
+        "好的，我们下次再聊。",
+    ]
 
 
 def test_no_flip_when_patient_addresses_therapist():

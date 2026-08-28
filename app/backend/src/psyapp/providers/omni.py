@@ -121,26 +121,25 @@ class QwenOmniLLM(OpenAICompatLLM):
 # ── omni 轮次文本解析 ────────────────────────────────────────────────
 
 # 称呼语铁证：内容以「X老师」+标点开头即是在称呼对方为老师，
-# 说话人一定不是该老师本人。若被标成「咨询师」，说明全篇角色已翻转。
+# 说话人一定不是该老师本人。若该轮被标成「咨询师」，说明标错了，就地改为「来访者」。
 _ADDRESS_FLIP_RE = re.compile(r"^[\u4e00-\u9fa5A-Za-z]{1,6}老师[，,？！!?。.]")
 
 
 def fix_role_flip_by_address(
     turns: list[tuple[str, str]],
 ) -> list[tuple[str, str]]:
-    """称呼语翻转校正：任何「咨询师」轮以「X老师」称呼对方开头 → 全篇角色对调。
+    """称呼语局部改标：任何「咨询师」轮以「X老师」称呼对方开头 → 该轮改为「来访者」。
 
-    输入/输出均为 (role_label, content) 列表。命中一次即互换所有「咨询师」↔「来访者」，
-    其他角色标签不动；未命中原样返回。
+    称呼对方为「X老师」的人不可能是老师本人，故该轮说话人应是来访者。
+    输入/输出均为 (role_label, content) 列表。只改标命中的「咨询师」轮，
+    其余轮次（含其他「咨询师」「来访者」轮）一律不动；未命中原样返回。
     """
-    flipped = any(
-        role == "咨询师" and _ADDRESS_FLIP_RE.match(content)
+    return [
+        ("来访者", content)
+        if role == "咨询师" and _ADDRESS_FLIP_RE.match(content)
+        else (role, content)
         for role, content in turns
-    )
-    if not flipped:
-        return turns
-    swap = {"咨询师": "来访者", "来访者": "咨询师"}
-    return [(swap.get(role, role), content) for role, content in turns]
+    ]
 
 
 def _split_role_content(seq: int, role_and_content: str) -> tuple[int, str, str] | None:
