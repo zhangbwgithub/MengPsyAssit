@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 
 // 支持的音频扩展名（与后端校验保持一致）
 const ALLOWED_EXTS = ['.wav', '.m4a', '.mp3', '.opus', '.flac']
@@ -22,8 +22,20 @@ const sessionId = ref(null)
 const sessionStatus = ref('')
 const sessionData = ref(null)
 const pollTimer = ref(null)
+// T-S1.10：上传/轮询超时与在途护栏
+const UPLOAD_TIMEOUT_MS = 300 * 1000 // 局域网大文件上传留余量
+const POLL_TIMEOUT_MS = 10 * 1000
+const POLL_MAX_CONSECUTIVE_FAILURES = 3
+const pollingInFlight = ref(false)
+const pollFailures = ref(0)
 // T-S1.6：上传可选管线模式；默认多模态直转（推荐）
 const selectedMode = ref('omni')
+
+// T-S1.10：左侧上传/分析记录看板
+const sessions = ref([])
+const boardLoading = ref(false)
+const boardError = ref('')
+const activeSessionId = ref(null)
 
 const acceptedTypes = ALLOWED_EXTS.join(',')
 
@@ -119,45 +131,82 @@ async function upload() {
   }
   error.value = ''
   uploading.value = true
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), UPLOAD_TIMEOUT_MS)
   try {
     const form = new FormData()
     form.append('file', file.value)
     form.append('mode', selectedMode.value)
-    const res = await fetch('/api/sessions', { method: 'POST', body: form })
+    const res = await fetch('/api/sessions', {
+      method: 'POST',
+      body: form,
+      signal: controller.signal,
+    })
     const json = await res.json()
     if (!json.ok) {
       throw new Error(json.error?.message || '上传失败')
     }
     sessionId.value = json.data.session_id
+    activeSessionId.value = json.data.session_id
     sessionStatus.value = json.data.status
+    loadSessions()
     startPolling()
   } catch (err) {
-    error.value = err.message || '上传请求失败'
+    if (err.name === 'AbortError') {
+      error.value = '上传请求超时，请检查网络后重试'
+    } else {
+      error.value = err.message || '上传请求失败'
+    }
     uploading.value = false
+  } finally {
+    clearTimeout(timeout)
   }
 }
 
 function startPolling() {
   stopPolling()
-  pollTimer.value = setInterval(async () => {
-    try {
-      const res = await fetch(`/api/sessions/${sessionId.value}`)
-      const json = await res.json()
-      if (!json.ok) {
-        throw new Error(json.error?.message || '查询失败')
-      }
-      sessionData.value = json.data
-      sessionStatus.value = json.data.status
-      if (['done', 'failed'].includes(json.data.status)) {
-        stopPolling()
-        uploading.value = false
-      }
-    } catch (err) {
-      error.value = err.message || '轮询失败'
+  pollingInFlight.value = false
+  pollFailures.value = 0
+  pollTimer.value = setInterval(() => {
+    // T-S1.10：在途护栏——上一个轮询未结束时跳过，不叠加请求
+    if (pollingInFlight.value) return
+    pollOnce()
+  }, 3000)
+}
+
+async function pollOnce() {
+  const currentId = sessionId.value
+  if (!currentId || pollingInFlight.value) return
+  pollingInFlight.value = true
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), POLL_TIMEOUT_MS)
+  try {
+    const res = await fetch(`/api/sessions/${currentId}`, {
+      signal: controller.signal,
+    })
+    const json = await res.json()
+    if (!json.ok) {
+      throw new Error(json.error?.message || '查询失败')
+    }
+    pollFailures.value = 0
+    sessionData.value = json.data
+    sessionStatus.value = json.data.status
+    if (['done', 'failed'].includes(json.data.status)) {
       stopPolling()
       uploading.value = false
+      loadSessions()
     }
-  }, 3000)
+  } catch (err) {
+    pollFailures.value += 1
+    if (pollFailures.value >= POLL_MAX_CONSECUTIVE_FAILURES) {
+      stopPolling()
+      uploading.value = false
+      error.value = '查询会话状态失败，请刷新页面或点击重试'
+    }
+  } finally {
+    clearTimeout(timeout)
+    pollingInFlight.value = false
+  }
 }
 
 function stopPolling() {
@@ -165,6 +214,7 @@ function stopPolling() {
     clearInterval(pollTimer.value)
     pollTimer.value = null
   }
+  pollingInFlight.value = false
 }
 
 function reset() {
@@ -174,6 +224,7 @@ function reset() {
   uploading.value = false
   error.value = ''
   sessionId.value = null
+  activeSessionId.value = null
   sessionStatus.value = ''
   sessionData.value = null
 }
@@ -184,6 +235,74 @@ function retry() {
   reset()
   file.value = keptFile
   fileName.value = keptFile?.name || ''
+}
+
+// T-S1.10：看板列表加载 / 点击回看
+async function loadSessions() {
+  boardLoading.value = true
+  boardError.value = ''
+  try {
+    const res = await fetch('/api/sessions')
+    const json = await res.json()
+    if (!json.ok) {
+      throw new Error(json.error?.message || '加载记录失败')
+    }
+    sessions.value = json.data?.sessions || []
+  } catch (err) {
+    boardError.value = err.message || '加载记录失败'
+  } finally {
+    boardLoading.value = false
+  }
+}
+
+const isActiveSession = (id) => activeSessionId.value === id
+
+const boardStatusClass = (status) => {
+  if (status === 'done') return 'done'
+  if (status === 'failed') return 'failed'
+  return 'processing'
+}
+
+const boardStatusText = (status) => {
+  if (status === 'done') return '完成'
+  if (status === 'failed') return '失败'
+  return '处理中'
+}
+
+function formatStartedAt(value) {
+  if (!value) return '—'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '—'
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+async function selectSession(id) {
+  if (sessionId.value === id && sessionStatus.value) return
+  stopPolling()
+  uploading.value = false
+  error.value = ''
+  activeSessionId.value = id
+  sessionStatus.value = ''
+  sessionData.value = null
+  try {
+    const res = await fetch(`/api/sessions/${id}`)
+    const json = await res.json()
+    if (!json.ok) {
+      throw new Error(json.error?.message || '加载会话失败')
+    }
+    sessionId.value = id
+    sessionData.value = json.data
+    sessionStatus.value = json.data.status || ''
+    if (json.data.status === 'done' || json.data.status === 'failed') {
+      return
+    }
+    startPolling()
+  } catch (err) {
+    error.value = err.message || '加载会话失败'
+    sessionId.value = null
+    activeSessionId.value = null
+  }
 }
 
 function formatMs(ms) {
@@ -268,6 +387,7 @@ const metaInfoText = computed(() => {
   return parts.join(' · ')
 })
 
+onMounted(loadSessions)
 onUnmounted(stopPolling)
 </script>
 
@@ -278,7 +398,48 @@ onUnmounted(stopPolling)
       <p class="subtitle">录音 → 转写 → 清理 → 客观记录</p>
     </header>
 
-    <main class="container">
+    <main class="container dashboard">
+      <!-- 左侧：上传与分析记录看板 -->
+      <aside class="board">
+        <div class="board-header">
+          <h2>上传与记录</h2>
+          <button
+            class="btn board-refresh"
+            type="button"
+            @click="loadSessions"
+            :disabled="boardLoading"
+          >
+            {{ boardLoading ? '刷新中…' : '刷新' }}
+          </button>
+        </div>
+
+        <div v-if="boardError" class="board-error">{{ boardError }}</div>
+
+        <p v-if="sessions.length === 0" class="board-empty">暂无记录</p>
+
+        <ul v-else class="board-list">
+          <li
+            v-for="s in sessions"
+            :key="s.session_id"
+            class="board-item"
+            :class="{ active: isActiveSession(s.session_id) }"
+            @click="selectSession(s.session_id)"
+          >
+            <span class="board-id">#{{ s.session_id }}</span>
+            <span class="board-badge" :class="boardStatusClass(s.status)">
+              <span
+                v-if="s.status !== 'done' && s.status !== 'failed'"
+                class="board-spinner"
+              ></span>
+              {{ boardStatusText(s.status) }}
+            </span>
+            <span class="board-time">{{ formatStartedAt(s.started_at) }}</span>
+          </li>
+        </ul>
+      </aside>
+
+      <!-- 右侧：上传区 / 对话稿区 / 结果区 -->
+      <div class="main-panel">
       <!-- 上传区 -->
       <section class="card upload-card">
         <h2>1. 上传咨询录音</h2>
@@ -433,6 +594,7 @@ onUnmounted(stopPolling)
           </div>
         </div>
       </section>
+      </div>
     </main>
 
     <footer class="footer">
@@ -493,10 +655,148 @@ body {
 
 .container {
   flex: 1;
-  max-width: 960px;
+  max-width: 1120px;
   width: 100%;
   margin: 0 auto;
   padding: 16px;
+}
+
+.dashboard {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.main-panel {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 左侧上传/分析记录看板 */
+.board {
+  flex: 0 0 260px;
+  width: 260px;
+  position: sticky;
+  top: 16px;
+  background: var(--card);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 16px;
+}
+
+.board-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.board-header h2 {
+  margin: 0;
+  font-size: 1rem;
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.btn.board-refresh {
+  padding: 4px 10px;
+  font-size: 0.8rem;
+  background: var(--primary);
+  color: #fff;
+}
+
+.board-error {
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  color: var(--danger);
+  font-size: 0.8rem;
+}
+
+.board-empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.board-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.board-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.board-item:hover {
+  border-color: #bfdbfe;
+  background: #f5f9ff;
+}
+
+.board-item.active {
+  border-color: var(--primary);
+  background: #f5f9ff;
+}
+
+.board-id {
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: var(--primary-dark);
+}
+
+.board-time {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.board-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+.board-badge.done {
+  background: #e8f7f0;
+  color: #146c4b;
+}
+
+.board-badge.failed {
+  background: #fef2f2;
+  color: var(--danger);
+}
+
+.board-badge.processing {
+  background: #e8f1ff;
+  color: var(--primary-dark);
+}
+
+.board-spinner {
+  width: 10px;
+  height: 10px;
+  border: 2px solid rgba(0, 0, 0, 0.12);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
 }
 
 .card {
@@ -894,7 +1194,19 @@ body {
   border-top: 1px solid #e5e7eb;
 }
 
-/* 响应式：窄屏纵向堆叠 */
+/* 响应式：看板加宽断点，窄屏纵向堆叠 */
+@media (max-width: 767px) {
+  .dashboard {
+    flex-direction: column;
+  }
+
+  .board {
+    flex: 1 1 auto;
+    width: 100%;
+    position: static;
+  }
+}
+
 @media (max-width: 480px) {
   .header h1 {
     font-size: 1.45rem;
