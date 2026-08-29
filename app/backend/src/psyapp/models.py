@@ -66,6 +66,26 @@ class Session(Base):
     cleaned_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 审计底稿：清理前的原始转写稿（`代号: 文本` 逐行），T-S1.3 起持久化
     raw_transcript: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # T-S1.11：记录元数据（来源文件名/标签/摘要/分组）
+    original_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    tags: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    brief: Mapped[str | None] = mapped_column(Text, nullable=True)
+    group_id: Mapped[int | None] = mapped_column(
+        ForeignKey("session_groups.id"), nullable=True, index=True
+    )
+
+
+class SessionGroup(Base):
+    """T-S1.11：同一音频的记录分组（组名/标签/备注，可增删改查）。"""
+
+    __tablename__ = "session_groups"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    tags: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
 
 
 class Segment(Base):

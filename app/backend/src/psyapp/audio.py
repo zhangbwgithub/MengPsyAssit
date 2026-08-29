@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 from uuid import uuid4
 
@@ -56,3 +57,31 @@ async def save_upload_to_audio_dir(file: UploadFile, audio_dir: Path, suffix: st
         dest.unlink(missing_ok=True)
         raise ApiError("audio_save_failed", "音频文件保存失败", http_status=500) from exc
     return str(dest)
+
+
+def probe_duration_seconds(path: str) -> int:
+    """T-S1.11：用 ffprobe 读音频时长（浮点秒转 int）。
+
+    任何异常/超时/非数字都返回 0，不阻塞上传主链路。
+    """
+    try:
+        proc = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "quiet",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "csv=p=0",
+                path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if proc.returncode != 0:
+            return 0
+        return int(float(proc.stdout.strip()))
+    except Exception:  # noqa: BLE001 —— 时长探测失败不阻塞上传
+        return 0

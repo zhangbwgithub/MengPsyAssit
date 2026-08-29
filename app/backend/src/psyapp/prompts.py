@@ -1,7 +1,7 @@
 """Prompt 模板加载与占位符替换。
 
 - 模板目录可配置（默认 app/backend/prompts，相对仓库根解析）
-- 版本化模板：clean/v4.md、record/v2.md
+- 版本化模板：clean/v4.md、record/v3.md
 - 替换占位符用简单字符串替换（任务卡路线决策 7）
 """
 
@@ -14,7 +14,7 @@ from .response import ApiError
 
 _TEMPLATES = {
     "clean": ("clean", "v4", "{{transcript}}"),
-    "record": ("record", "v2", "{{cleaned_transcript}}"),
+    "record": ("record", "v3", "{{cleaned_transcript}}"),
 }
 
 
