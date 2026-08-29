@@ -271,7 +271,9 @@ const boardStatusText = (status) => {
 
 function formatStartedAt(value) {
   if (!value) return '—'
-  const date = new Date(value)
+  // 后端 started_at 为 naive UTC（无时区后缀），JS 会把无后缀串当本地时间；
+  // 显式补 'Z' 使 new Date 按 UTC 解析，再转浏览器本地时区输出。
+  const date = new Date(`${value}Z`)
   if (Number.isNaN(date.getTime())) return '—'
   const pad = (n) => String(n).padStart(2, '0')
   return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
