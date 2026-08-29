@@ -44,3 +44,33 @@
 - 不做真实 API 调用测试（浏览器端到端由大统领验收）。
 - `tests/audio/` 下 04/05/06/07/08/09 音频与标注文件为工作区既有未跟踪文件，不在本卡范围，未纳入提交。
 - 提交到分支 `task/t-s1.10-upload-stuck-board`，commit message 前缀 `[T-S1.10]`。
+
+## R1：看板时间显示修正——UTC 原值 → 北京时间（FB-010）
+
+### 做了什么
+
+只改 `app/frontend/src/App.vue` 的 `formatStartedAt` 一处，后端、接口、其余前端逻辑与样式零改动。
+
+1. 根因：后端 `started_at` 为 naive UTC（如 `2026-08-29T05:19:xx`），JSON 输出无 `Z`/时区后缀；JS `new Date(value)` 把无后缀串当**本地时间**，UTC 数字被原样显示，差 8 小时。
+2. 修复：`new Date(\`${value}Z\`)` 显式补 `Z`，让入参按 UTC 解释后再转浏览器本地时区；输出仍为本地时区 `MM-DD HH:MM`（`pad` 补齐规则不变），解析失败仍返回 `'—'`。
+
+### 跑了什么命令 / 结果
+
+- 前端构建：`cd app/frontend && npm run build` → **✓ built in 377ms**，无 error。
+- 后端测试：`.venv/bin/python -m pytest app/backend/tests -q` → **59 passed in 12.63s**（与基线一致）。
+- 后端静态：`.venv/bin/ruff check app/backend` → **All checks passed!**。
+- git diff 自查：只含 `app/frontend/src/App.vue` + 本自报，无越界。
+
+### 逐条对照验收标准
+
+| 项 | 结果 | 说明 |
+| -- | -- | -- |
+| 1. npm run build 成功 | PASS | `✓ built in 377ms`，10 modules，无 error |
+| 2. pytest 59 passed | PASS | `59 passed in 12.63s`，后端零改动 |
+| 3. ruff All checks passed | PASS | `All checks passed!`，后端零改动 |
+| 4. git diff 只含 App.vue + 本自报 | PASS | diff 只含 `app/frontend/src/App.vue` + 本自报，未动后端/vite.config.js/新依赖 |
+
+### 备注
+
+- 不做真实 API 调用测试（浏览器端到端由大统领验收）。
+- 提交到分支 `task/t-s1.10-upload-stuck-board`，commit message 前缀 `[T-S1.10-R1]`。
