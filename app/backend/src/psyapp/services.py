@@ -489,7 +489,11 @@ def _generate_record(
 
 
 def parse_record_json(text: str) -> dict[str, Any]:
-    """解析 LLM 输出的记录 JSON；剥掉可能的 ```json 围栏；缺失三字段抛 ValueError。"""
+    """解析 LLM 输出的记录 JSON；剥掉可能的 ```json 围栏；缺失三字段抛 ValueError。
+
+    T-S1.11：brief/tags 为新增可选元数据，宽松解析——缺失/类型不对给默认值，
+    不作为必填校验（避免模型偶发缺字段导致记录整体失败）。
+    """
     text = text.strip()
     if text.startswith("```"):
         text = text.strip("`")
@@ -510,11 +514,19 @@ def parse_record_json(text: str) -> dict[str, Any]:
         raise ValueError("counselor_work 缺失或非字符串")
     if not isinstance(topics, list):
         raise ValueError("client_reported_topics 缺失或非数组")
+
+    brief = data.get("brief")
+    tags = data.get("tags")
+    data["brief"] = brief if isinstance(brief, str) else ""
+    data["tags"] = [tag for tag in tags if isinstance(tag, str)] if isinstance(tags, list) else []
     return data
 
 
 def store_record(db, session_id: int, settings: Settings, data: dict[str, Any]) -> Record:
-    """records 落库：basic_info 存 provider/model/prompt_version/session_id。"""
+    """records 落库：basic_info 存 provider/model/prompt_version/session_id。
+
+    T-S1.11：同时把 brief/tags 回写到 sessions 行（omni 与 asr 共用本调用点）。
+    """
     session = db.get(Session, session_id)
     record = Record(
         user_id=settings.dev_user_id,
@@ -525,7 +537,7 @@ def store_record(db, session_id: int, settings: Settings, data: dict[str, Any]) 
         basic_info={
             "provider": settings.llm_provider,
             "model": settings.llm_model,
-            # 语义：clean prompt 版本（前端/示例脚本按此展示「清理提示词版本」）；record prompt 仍为 v2。
+            # 语义：clean prompt 版本（前端/示例脚本按此展示「清理提示词版本」）；record prompt 为 v3。
             "prompt_version": "v4",
             "session_id": session_id,
             "client_reported_topics": data["client_reported_topics"],
@@ -535,5 +547,8 @@ def store_record(db, session_id: int, settings: Settings, data: dict[str, Any]) 
         notes="",
     )
     db.add(record)
+    if session is not None:
+        session.brief = data.get("brief", "")
+        session.tags = data.get("tags", [])
     db.commit()
     return record
