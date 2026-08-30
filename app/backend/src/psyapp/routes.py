@@ -10,8 +10,8 @@ from pydantic import BaseModel
 
 from .audio import probe_duration_seconds, save_upload_to_audio_dir, validate_audio_ext
 from .config import Settings
-from .enums import PipelineMode, SessionMode, SessionStatus
-from .models import Job, Record, Segment, Session, SessionGroup
+from .enums import ClientStatus, PipelineMode, SessionMode, SessionStatus
+from .models import Client, Job, Record, Segment, Session, SessionGroup
 from .providers import get_asr_provider, get_llm_provider
 from .providers.omni import QwenOmniLLM
 from .response import ApiError, ok
@@ -25,6 +25,8 @@ _MODEL_DISPLAY = {
     PipelineMode.ASR: "paraformer-v2 + deepseek-v4-flash",
 }
 
+_CLIENT_STATUSES = (ClientStatus.ACTIVE, ClientStatus.DISABLED)
+
 
 class SessionPatch(BaseModel):
     """PATCH /sessions/{id}：只更新 body 中显式传入的字段。"""
@@ -32,6 +34,39 @@ class SessionPatch(BaseModel):
     tags: list[str] | None = None
     brief: str | None = None
     group_id: int | None = None
+    # T-S1.17：显式传入才更新；非空值须存在且同用户，否则 404
+    client_id: int | None = None
+
+
+class ClientCreate(BaseModel):
+    """POST /clients：name 必填，其余可选。"""
+
+    name: str
+    code: str | None = None
+    gender: str | None = None
+    age: int | None = None
+    phone: str | None = None
+    emergency_contact: str | None = None
+    emergency_phone: str | None = None
+    start_date: str | None = None
+    status: str | None = None
+    note: str | None = None
+
+
+class ClientPatch(BaseModel):
+    """PATCH /clients/{id}：只更新显式传入字段（model_fields_set 口径）。"""
+
+    name: str | None = None
+    code: str | None = None
+    gender: str | None = None
+    age: int | None = None
+    phone: str | None = None
+    emergency_contact: str | None = None
+    emergency_phone: str | None = None
+    start_date: str | None = None
+    status: str | None = None
+    note: str | None = None
+    session_count_manual: int | None = None
 
 
 class GroupCreate(BaseModel):
@@ -116,10 +151,78 @@ def _group_payload(group: SessionGroup, member_count: int) -> dict:
     }
 
 
+# ── T-S1.17 来访者档案 ───────────────────────────────────────────
+
+
+def _get_client_or_404(db, client_id: int, user_id: int) -> Client:
+    client = db.get(Client, client_id)
+    if client is None or client.user_id != user_id:
+        raise ApiError("not_found", f"来访者不存在: {client_id}", http_status=404)
+    return client
+
+
+def _parse_start_date(value: str | None) -> date | None:
+    """YYYY-MM-DD 解析；非法格式抛 422（create/patch 共用）。"""
+    if value is None:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        raise ApiError(
+            "validation_error",
+            f"start_date 非法: {value!r}（须为 YYYY-MM-DD）",
+            http_status=422,
+        ) from None
+
+
+def _session_count_auto(db, client_id: int, user_id: int) -> int:
+    """来访者名下会话数（所有状态）；与 group 的 member_count 同口径带 user_id。"""
+    return (
+        db.query(Session)
+        .filter(Session.user_id == user_id, Session.client_id == client_id)
+        .count()
+    )
+
+
+def _client_payload(db, client: Client, user_id: int) -> dict:
+    auto = _session_count_auto(db, client.id, user_id)
+    return {
+        "client_id": client.id,
+        "code": client.code,
+        "name": client.name,
+        "gender": client.gender,
+        "age": client.age,
+        "phone": client.phone,
+        "emergency_contact": client.emergency_contact,
+        "emergency_phone": client.emergency_phone,
+        "status": client.status,
+        "start_date": client.start_date.isoformat() if client.start_date else None,
+        "session_count_manual": client.session_count_manual,
+        "session_count_auto": auto,
+        "session_count": (
+            client.session_count_manual if client.session_count_manual is not None else auto
+        ),
+        "note": client.note,
+    }
+
+
+def _check_client_name_unique(db, user_id: int, name: str, exclude_id: int | None = None) -> None:
+    """同用户名查重（建/PATCH 重名共用），精确匹配，不 trim 语义差异。"""
+    query = db.query(Client).filter(Client.user_id == user_id, Client.name == name)
+    if exclude_id is not None:
+        query = query.filter(Client.id != exclude_id)
+    if query.first() is not None:
+        raise ApiError("validation_error", f"来访者姓名重复: {name}", http_status=422)
+
+
 def _session_detail_data(db, session: Session) -> dict:
     """构造 GET /sessions/{id} 与导出共用的会话详情 payload。"""
     pipeline_mode = session.pipeline_mode or PipelineMode.ASR
     is_omni = pipeline_mode == PipelineMode.OMNI
+    client_name = None
+    if session.client_id is not None:
+        client = db.get(Client, session.client_id)
+        client_name = client.name if client is not None else None
     segments = [
         {
             "seq": seg.seq,
@@ -150,6 +253,9 @@ def _session_detail_data(db, session: Session) -> dict:
         "tags": session.tags or [],
         "brief": session.brief,
         "group_id": session.group_id,
+        # T-S1.17：来访者档案关联
+        "client_id": session.client_id,
+        "client_name": client_name,
         "record": None,
     }
 
@@ -321,6 +427,8 @@ def list_sessions(request: Request):
         )
         groups = db.query(SessionGroup).filter(SessionGroup.user_id == user_id).all()
         group_names = {g.id: g.name for g in groups}
+        clients = db.query(Client).filter(Client.user_id == user_id).all()
+        client_names = {c.id: c.name for c in clients}
         return ok(
             {
                 "sessions": [
@@ -335,6 +443,8 @@ def list_sessions(request: Request):
                         "brief": s.brief,
                         "group_id": s.group_id,
                         "group_name": group_names.get(s.group_id),
+                        "client_id": s.client_id,
+                        "client_name": client_names.get(s.client_id),
                     }
                     for s in rows
                 ]
@@ -548,6 +658,12 @@ def patch_session(
             else:
                 _get_group_or_404(db, patch.group_id, user_id)
                 session.group_id = patch.group_id
+        if "client_id" in fields:
+            if patch.client_id is None:
+                session.client_id = None
+            else:
+                _get_client_or_404(db, patch.client_id, user_id)
+                session.client_id = patch.client_id
 
         db.commit()
         db.refresh(session)
@@ -557,6 +673,7 @@ def patch_session(
                 "tags": session.tags or [],
                 "brief": session.brief,
                 "group_id": session.group_id,
+                "client_id": session.client_id,
             }
         )
     finally:
@@ -611,6 +728,149 @@ def delete_session(request: Request, session_id: int):
         if session is None or session.user_id != user_id:
             raise ApiError("not_found", f"会话不存在: {session_id}", http_status=404)
         return ok({"deleted": _hard_delete_session(db, session, user_id)})
+    finally:
+        db.close()
+
+
+@router.get("/clients")
+def list_clients(request: Request):
+    """T-S1.17：来访者列表，active 优先 + start_date 降序（无日期按 id 降序兜底）。
+
+    每条含档案全字段 + session_count_auto/session_count（手工值优先）。
+    """
+    db = _open_db(request)
+    try:
+        user_id = _get_dev_user_id(request)
+        rows = (
+            db.query(Client)
+            .filter(Client.user_id == user_id)
+            .order_by(
+                (Client.status == ClientStatus.ACTIVE).desc(),
+                Client.start_date.desc(),
+                Client.id.desc(),
+            )
+            .all()
+        )
+        return ok({"clients": [_client_payload(db, c, user_id) for c in rows]})
+    finally:
+        db.close()
+
+
+@router.post("/clients")
+def create_client(request: Request, body: ClientCreate):
+    """新建来访者；name 空/同用户重名 → 422；start_date 非法 → 422。
+
+    未传 code 时自动生成 `C+client_id` 回填。
+    """
+    db = _open_db(request)
+    try:
+        user_id = _get_dev_user_id(request)
+        name = body.name.strip()
+        if not name:
+            raise ApiError("validation_error", "来访者姓名不能为空", http_status=422)
+        _check_client_name_unique(db, user_id, name)
+
+        start_date = _parse_start_date(body.start_date)
+        status = body.status if body.status is not None else ClientStatus.ACTIVE
+        if status not in _CLIENT_STATUSES:
+            raise ApiError(
+                "validation_error",
+                f"status 非法: {status!r}（可选值: 'active' / 'disabled'）",
+                http_status=422,
+            )
+
+        client = Client(
+            user_id=user_id,
+            code=(body.code or "").strip(),
+            name=name,
+            gender=body.gender,
+            age=body.age,
+            phone=body.phone,
+            emergency_contact=body.emergency_contact,
+            emergency_phone=body.emergency_phone,
+            start_date=start_date,
+            status=status,
+            note=body.note,
+        )
+        db.add(client)
+        db.commit()
+        db.refresh(client)
+        # 未传 code 时后端回填 C+client_id
+        if not client.code:
+            client.code = f"C{client.id}"
+            db.commit()
+            db.refresh(client)
+        return ok(_client_payload(db, client, user_id))
+    finally:
+        db.close()
+
+
+@router.patch("/clients/{client_id}")
+def patch_client(request: Request, client_id: int, body: ClientPatch | None = None):
+    """编辑来访者：只更新显式传入字段；name 重名/非法 status → 422。"""
+    body = body or ClientPatch()
+    db = _open_db(request)
+    try:
+        user_id = _get_dev_user_id(request)
+        client = _get_client_or_404(db, client_id, user_id)
+
+        fields = body.model_fields_set
+        if "name" in fields:
+            name = (body.name or "").strip()
+            if not name:
+                raise ApiError("validation_error", "来访者姓名不能为空", http_status=422)
+            _check_client_name_unique(db, user_id, name, exclude_id=client_id)
+            client.name = name
+        if "code" in fields:
+            client.code = (body.code or "").strip() or f"C{client.id}"
+        if "gender" in fields:
+            client.gender = body.gender
+        if "age" in fields:
+            client.age = body.age
+        if "phone" in fields:
+            client.phone = body.phone
+        if "emergency_contact" in fields:
+            client.emergency_contact = body.emergency_contact
+        if "emergency_phone" in fields:
+            client.emergency_phone = body.emergency_phone
+        if "start_date" in fields:
+            client.start_date = _parse_start_date(body.start_date)
+        if "session_count_manual" in fields:
+            client.session_count_manual = body.session_count_manual
+        if "status" in fields:
+            status = body.status
+            if status not in _CLIENT_STATUSES:
+                raise ApiError(
+                    "validation_error",
+                    f"status 非法: {status!r}（可选值: 'active' / 'disabled'）",
+                    http_status=422,
+                )
+            client.status = status
+        if "note" in fields:
+            client.note = body.note
+
+        db.commit()
+        db.refresh(client)
+        return ok(_client_payload(db, client, user_id))
+    finally:
+        db.close()
+
+
+@router.delete("/clients/{client_id}")
+def delete_client(request: Request, client_id: int):
+    """硬删来访者；名下会话 client_id 置 null（记录保留）。"""
+    db = _open_db(request)
+    try:
+        user_id = _get_dev_user_id(request)
+        client = _get_client_or_404(db, client_id, user_id)
+        affected = (
+            db.query(Session)
+            .filter(Session.user_id == user_id, Session.client_id == client_id)
+            .update({"client_id": None}, synchronize_session=False)
+        )
+        db.delete(client)
+        db.commit()
+        return ok({"deleted": client_id, "affected_sessions": affected})
     finally:
         db.close()
 

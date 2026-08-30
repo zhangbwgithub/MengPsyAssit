@@ -5,10 +5,10 @@ S0 dev 单用户模式：所有业务表从第一天预留 user_id 多用户隔�
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from .enums import (
@@ -44,6 +44,16 @@ class Client(Base):
     status: Mapped[str] = mapped_column(
         String(16), nullable=False, default=ClientStatus.ACTIVE
     )
+    # T-S1.17 来访者档案：姓名必填（API 层校验）；code 保留作内部代号。
+    name: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    gender: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    age: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    emergency_contact: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    emergency_phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # 小节数手工修正值；为空表示自动计（名下会话数）。
+    session_count_manual: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class Session(Base):
