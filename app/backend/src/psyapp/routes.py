@@ -15,7 +15,7 @@ from .models import Job, Record, Segment, Session, SessionGroup
 from .providers import get_asr_provider, get_llm_provider
 from .providers.omni import QwenOmniLLM
 from .response import ApiError, ok
-from .segments import get_segments
+from .segments import build_cleaned_text, get_segments
 from .services import run_background_pipeline
 
 router = APIRouter()
@@ -44,6 +44,14 @@ class GroupPatch(BaseModel):
     name: str | None = None
     tags: list[str] | None = None
     note: str | None = None
+
+
+class BulkDeleteBody(BaseModel):
+    session_ids: list[int]
+
+
+class SegmentPatch(BaseModel):
+    text: str
 
 
 def _settings_of(request: Request) -> Settings:
@@ -106,6 +114,88 @@ def _group_payload(group: SessionGroup, member_count: int) -> dict:
         "created_at": group.created_at.isoformat() if group.created_at else None,
         "member_count": member_count,
     }
+
+
+def _session_detail_data(db, session: Session) -> dict:
+    """构造 GET /sessions/{id} 与导出共用的会话详情 payload。"""
+    pipeline_mode = session.pipeline_mode or PipelineMode.ASR
+    is_omni = pipeline_mode == PipelineMode.OMNI
+    segments = [
+        {
+            "seq": seg.seq,
+            "speaker": seg.speaker,
+            "role": seg.role,
+            "role_label": seg.role_label,
+            "cleaned_content": seg.cleaned_content,
+            "content": seg.content,
+            # omni 无时间戳，API 返回 null（前端不渲染时间行）
+            "start_ms": None if is_omni else seg.start_ms,
+            "end_ms": None if is_omni else seg.end_ms,
+            "confidence": seg.confidence,
+        }
+        for seg in get_segments(db, session.id)
+    ]
+    # cleaned_text：直接读会话落库的清理结果（清理阶段写入）
+    data = {
+        "session_id": session.id,
+        "status": session.status,
+        "mode": session.mode,
+        "pipeline_mode": pipeline_mode,
+        "model_display": _MODEL_DISPLAY.get(pipeline_mode, _MODEL_DISPLAY[PipelineMode.ASR]),
+        "started_at": session.started_at.isoformat() if session.started_at else None,
+        "audio_path": session.audio_path,
+        "segments": segments,
+        "cleaned_text": session.cleaned_text,
+        # T-S1.11：记录元数据（标签/摘要/分组）
+        "tags": session.tags or [],
+        "brief": session.brief,
+        "group_id": session.group_id,
+        "record": None,
+    }
+
+    record = (
+        db.query(Record)
+        .filter(Record.session_id == session.id)
+        .order_by(Record.id.desc())
+        .first()
+    )
+    if record is not None:
+        data["record"] = {
+            "record_id": record.id,
+            "summary": record.summary,
+            "counselor_work": record.therapist_work,
+            "client_reported_topics": record.basic_info.get("client_reported_topics", []),
+            "basic_info": record.basic_info,
+            "status": record.status,
+        }
+    return data
+
+
+def _hard_delete_session(db, session: Session, user_id: int) -> int:
+    """T-S1.13：单会话硬删级联（行 + 音频文件），供单删/组联删/批量删复用。
+
+    与 delete_session 原行为一致：删 segments/records/jobs/sessions 行，
+    commit 后 unlink 音频文件。返回被删 session_id；非本人会话抛 404。
+    """
+    if session is None or session.user_id != user_id:
+        raise ApiError("not_found", "会话不存在", http_status=404)
+
+    session_id = session.id
+    audio_path = session.audio_path
+    db.query(Segment).filter(Segment.session_id == session_id).delete(
+        synchronize_session=False
+    )
+    db.query(Record).filter(Record.session_id == session_id).delete(
+        synchronize_session=False
+    )
+    db.query(Job).filter(Job.session_id == session_id).delete(
+        synchronize_session=False
+    )
+    db.delete(session)
+    db.commit()
+    if audio_path:
+        Path(audio_path).unlink(missing_ok=True)
+    return session_id
 
 
 @router.post("/sessions")
@@ -212,60 +302,7 @@ def get_session(request: Request, session_id: int):
         user_id = _get_dev_user_id(request)
         if session is None or session.user_id != user_id:
             raise ApiError("not_found", f"会话不存在: {session_id}", http_status=404)
-
-        pipeline_mode = session.pipeline_mode or PipelineMode.ASR
-        is_omni = pipeline_mode == PipelineMode.OMNI
-        segments = [
-            {
-                "seq": seg.seq,
-                "speaker": seg.speaker,
-                "role": seg.role,
-                "role_label": seg.role_label,
-                "cleaned_content": seg.cleaned_content,
-                "content": seg.content,
-                # omni 无时间戳，API 返回 null（前端不渲染时间行）
-                "start_ms": None if is_omni else seg.start_ms,
-                "end_ms": None if is_omni else seg.end_ms,
-                "confidence": seg.confidence,
-            }
-            for seg in get_segments(db, session_id)
-        ]
-        # cleaned_text：直接读会话落库的清理结果（清理阶段写入）
-        data = {
-            "session_id": session.id,
-            "status": session.status,
-            "mode": session.mode,
-            "pipeline_mode": pipeline_mode,
-            "model_display": _MODEL_DISPLAY.get(
-                pipeline_mode, _MODEL_DISPLAY[PipelineMode.ASR]
-            ),
-            "started_at": session.started_at.isoformat() if session.started_at else None,
-            "audio_path": session.audio_path,
-            "segments": segments,
-            "cleaned_text": session.cleaned_text,
-            # T-S1.11：记录元数据（标签/摘要/分组）
-            "tags": session.tags or [],
-            "brief": session.brief,
-            "group_id": session.group_id,
-            "record": None,
-        }
-
-        record = (
-            db.query(Record)
-            .filter(Record.session_id == session_id)
-            .order_by(Record.id.desc())
-            .first()
-        )
-        if record is not None:
-            data["record"] = {
-                "record_id": record.id,
-                "summary": record.summary,
-                "counselor_work": record.therapist_work,
-                "client_reported_topics": record.basic_info.get("client_reported_topics", []),
-                "basic_info": record.basic_info,
-                "status": record.status,
-            }
-        return ok(data)
+        return ok(_session_detail_data(db, session))
     finally:
         db.close()
 
@@ -301,6 +338,61 @@ def list_sessions(request: Request):
                     }
                     for s in rows
                 ]
+            }
+        )
+    finally:
+        db.close()
+
+
+@router.post("/sessions/bulk-delete")
+def bulk_delete_sessions(request: Request, body: BulkDeleteBody):
+    """T-S1.13：批量硬删会话；空列表 422，不存在/非本人 id 记入 missing。"""
+    if not body.session_ids:
+        raise ApiError("validation_error", "session_ids 不能为空", http_status=422)
+
+    db = _open_db(request)
+    try:
+        user_id = _get_dev_user_id(request)
+        deleted: list[int] = []
+        missing: list[int] = []
+        for session_id in body.session_ids:
+            session = db.get(Session, session_id)
+            if session is None or session.user_id != user_id:
+                missing.append(session_id)
+                continue
+            deleted.append(_hard_delete_session(db, session, user_id))
+        return ok({"deleted": deleted, "missing": missing})
+    finally:
+        db.close()
+
+
+@router.get("/export/sessions")
+def export_sessions(request: Request):
+    """T-S1.13：全量导出当前用户会话详情（started_at 倒序）。"""
+    db = _open_db(request)
+    try:
+        user_id = _get_dev_user_id(request)
+        sessions = (
+            db.query(Session)
+            .filter(Session.user_id == user_id)
+            .order_by(Session.started_at.desc())
+            .all()
+        )
+        groups = db.query(SessionGroup).filter(SessionGroup.user_id == user_id).all()
+        group_names = {g.id: g.name for g in groups}
+
+        payload = []
+        for session in sessions:
+            item = _session_detail_data(db, session)
+            item["original_filename"] = session.original_filename
+            item["duration_sec"] = session.duration_sec
+            item["group_name"] = group_names.get(session.group_id)
+            payload.append(item)
+        return ok(
+            {
+                "exported_at": _now().isoformat(),
+                "count": len(payload),
+                "sessions": payload,
             }
         )
     finally:
@@ -350,6 +442,44 @@ def patch_session(
         db.close()
 
 
+@router.patch("/sessions/{session_id}/segments/{seq}")
+def patch_segment(request: Request, session_id: int, seq: int, body: SegmentPatch):
+    """T-S1.13：精确编辑转写段（表格视图）——只改 cleaned_content，原文保留。"""
+    text = body.text
+    if not text.strip():
+        raise ApiError("validation_error", "text 不能为空或纯空白", http_status=422)
+
+    db = _open_db(request)
+    try:
+        user_id = _get_dev_user_id(request)
+        session = db.get(Session, session_id)
+        if session is None or session.user_id != user_id:
+            raise ApiError("not_found", f"会话不存在: {session_id}", http_status=404)
+
+        segment = (
+            db.query(Segment)
+            .filter(Segment.session_id == session_id, Segment.seq == seq)
+            .first()
+        )
+        if segment is None:
+            raise ApiError("not_found", f"转写段不存在: seq={seq}", http_status=404)
+
+        segment.cleaned_content = text
+        db.flush()
+        session.cleaned_text = build_cleaned_text(db, session_id)
+        db.commit()
+        db.refresh(session)
+        return ok(
+            {
+                "session_id": session_id,
+                "seq": seq,
+                "word_count": len(session.cleaned_text or ""),
+            }
+        )
+    finally:
+        db.close()
+
+
 @router.delete("/sessions/{session_id}")
 def delete_session(request: Request, session_id: int):
     """T-S1.11：硬删会话（segments/records/jobs/sessions 行 + 音频文件）。"""
@@ -359,22 +489,7 @@ def delete_session(request: Request, session_id: int):
         user_id = _get_dev_user_id(request)
         if session is None or session.user_id != user_id:
             raise ApiError("not_found", f"会话不存在: {session_id}", http_status=404)
-
-        audio_path = session.audio_path
-        db.query(Segment).filter(Segment.session_id == session_id).delete(
-            synchronize_session=False
-        )
-        db.query(Record).filter(Record.session_id == session_id).delete(
-            synchronize_session=False
-        )
-        db.query(Job).filter(Job.session_id == session_id).delete(
-            synchronize_session=False
-        )
-        db.delete(session)
-        db.commit()
-        if audio_path:
-            Path(audio_path).unlink(missing_ok=True)
-        return ok({"deleted": session_id})
+        return ok({"deleted": _hard_delete_session(db, session, user_id)})
     finally:
         db.close()
 
@@ -483,18 +598,46 @@ def patch_group(request: Request, group_id: int, body: GroupPatch | None = None)
 
 
 @router.delete("/groups/{group_id}")
-def delete_group(request: Request, group_id: int):
-    """删除分组但保留记录：组内 sessions 的 group_id 置 null。"""
+def delete_group(request: Request, group_id: int, mode: str = "dissolve"):
+    """T-S1.13：删除分组双模式。
+
+    dissolve（默认，向后兼容）：组内 sessions 的 group_id 置 null，记录保留；
+    with_records：先按单会话硬删级联清空组内每个会话，再删组。
+    """
+    if mode not in ("dissolve", "with_records"):
+        raise ApiError(
+            "validation_error",
+            f"mode 非法: {mode!r}（可选值: 'dissolve' / 'with_records'）",
+            http_status=422,
+        )
+
     db = _open_db(request)
     try:
         user_id = _get_dev_user_id(request)
         group = _get_group_or_404(db, group_id, user_id)
 
-        db.query(Session).filter(Session.group_id == group_id).update(
-            {"group_id": None}, synchronize_session=False
+        members = (
+            db.query(Session)
+            .filter(Session.user_id == user_id, Session.group_id == group_id)
+            .all()
         )
+        deleted_sessions: list[int] = []
+        if mode == "dissolve":
+            db.query(Session).filter(
+                Session.user_id == user_id, Session.group_id == group_id
+            ).update({"group_id": None}, synchronize_session=False)
+        else:
+            for session in members:
+                deleted_sessions.append(_hard_delete_session(db, session, user_id))
+
         db.delete(group)
         db.commit()
-        return ok({"deleted": group_id})
+        return ok(
+            {
+                "deleted": group_id,
+                "mode": mode,
+                "deleted_sessions": deleted_sessions,
+            }
+        )
     finally:
         db.close()

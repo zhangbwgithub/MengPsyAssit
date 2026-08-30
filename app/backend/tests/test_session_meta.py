@@ -404,10 +404,14 @@ def test_groups_crud_full_chain(client):
     assert client.post("/groups", json={"name": "普通个案"}).status_code == 422
     assert client.patch(f"/groups/{group_id}", json={"name": "普通个案"}).status_code == 422
 
-    # 删除组：组内 sessions 归未分组，组本身消失
+    # 删除组：组内 sessions 归未分组，组本身消失（默认 dissolve）
     resp = client.delete(f"/groups/{group_id}")
     assert resp.status_code == 200, resp.text
-    assert resp.json()["data"] == {"deleted": group_id}
+    assert resp.json()["data"] == {
+        "deleted": group_id,
+        "mode": "dissolve",
+        "deleted_sessions": [],
+    }
 
     detail = client.get(f"/sessions/{session_id}").json()["data"]
     assert detail["group_id"] is None
