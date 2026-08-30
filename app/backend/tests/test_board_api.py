@@ -280,7 +280,7 @@ def test_export_sessions_structure_count_segments_and_order(client):
     )
     _add_child_rows(client, new)
 
-    resp = client.get("/api/export/sessions")
+    resp = client.get("/export/sessions")
     assert resp.status_code == 200, resp.text
     data = resp.json()["data"]
     assert set(data.keys()) == {"exported_at", "count", "sessions"}

@@ -366,7 +366,7 @@ def bulk_delete_sessions(request: Request, body: BulkDeleteBody):
         db.close()
 
 
-@router.get("/api/export/sessions")
+@router.get("/export/sessions")
 def export_sessions(request: Request):
     """T-S1.13：全量导出当前用户会话详情（started_at 倒序）。"""
     db = _open_db(request)
