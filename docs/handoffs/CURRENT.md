@@ -2,12 +2,13 @@
 
 > 工作流 §6：增量收尾及会话压缩前必答四问。最后更新：2026-08-27 大统领
 
-## 当前状态：S1 进行中——T-S1.1~S1.13 十二卡连发 ✅ 合 main（2026-08-27~30），双模式管线 + omni prompt v2 + 称呼语局部改标 + 上传挂起防护 + 记录看板（标签/摘要/分组/深色主题）+ 看板 API 扩展（组删除双模式/批量删除/导出/段落编辑）上线，反馈台账运行中（FB-001~012），T-S1.14 前端六项重构进行中
+## 当前状态：S1 进行中——T-S1.1~S1.14 十四卡连发 ✅ 合 main（2026-08-27~30），双模式管线 + omni prompt v2 + 称呼语局部改标 + 上传挂起防护 + 记录看板全量交互（标签/摘要/分组双删/批量选择删除导出/日历索引/右侧双Tab/转写双视图/深色主题）上线，反馈台账运行中（FB-001~012）
 
 ### 进行中
-- **T-S1.14 看板交互六项重构（前端）**：分组区上移、组删除双模式、批量选择/删除/导出、日历索引、右侧双 Tab（上传转写/记录详情）、转写双视图（气泡/表格精确编辑）。分支 `task/t-s1.14-board-ux`。
+- （无进行中任务卡）
 
 ### 已完成（S1 增补·二）
+- **T-S1.14 看板交互六项重构（前端）** ✅（merge 0a2e6b4）：FB-012 前端卡。App.vue 重写为编排器 + 拆 6 组件（BoardSidebar/CalendarMini/UploadPanel/DetailPanel/TranscriptBubbles/TranscriptTable）+ 2 utils。六项全落地：①分组区置顶（列表与工具条之上）；②组删除双模式弹层（仅解散组 / 红色危险「删除组和包含的记录」+条数+不可撤销提示）；③批量操作（选择模式开关/全选/已选 N 条/批量删除确认弹层/导出 `mengpsy-records-YYYYMMDD.json`）；④日历月视图（42 格/前后月占位/圆点条数/上下月/今天/点击过滤+清除）；⑤右侧双 Tab（①上传/转写区 ②记录详情区），点看板记录与上传 done 自动切详情，详情含全字段+气泡；⑥转写双视图（气泡只读/表格逐行编辑+保存+保存全部改动）。验收：78 pytest + ruff + build 全过；真浏览器沙箱实测 12/12 全过零 JS 异常（含批量删除/组联删真删落库、表格编辑落库、导出文件名捕获、上传 done 自动切详情）；线上 5199 冒烟全过（双 Tab/分组置顶/日历 5 天有数据/选择模式全选/详情自动切换/导出 API）。
 - **T-S1.13 看板 API 扩展** ✅（merge 756b0df）：FB-012 后端卡。`_hard_delete_session` 抽出复用；`DELETE /groups/{id}?mode=dissolve|with_records` 双模式（非法 mode 422）；`POST /sessions/bulk-delete`（空表 422、不存在进 missing）；`GET /export/sessions` 全量导出；`PATCH /sessions/{id}/segments/{seq}` 段落编辑（cleaned_content 改、content 原文不动、重建 cleaned_text，空白 422/不存在 404）。验收：78 pytest（+10 新增）+ ruff + import 全过；真 API 沙箱实测 11/11 全过（含音频文件级联删除验证）。大统领验收抓出并修复路由前缀 bug（`/api/export/sessions`→`/export/sessions`，vite 代理剥 /api 会 404，commit 6382bd7）。
 - **FB-012 台账**：看板交互六项需求 + 设计拍板（组双删语义、批量端点、导出 JSON、段落编辑重建文本）入 `docs/feedback.md`。
 
