@@ -7,6 +7,10 @@
 ### 进行中
 - （无进行中任务卡）
 
+### 已完成（S1 增补·三）
+- **T-S1.16 工作台页（前端）** ✅（merge 9029016）：FB-013 前端卡。页头「记录看板/工作台」胶囊切换；Workbench.vue（883 行，纯 CSS/SVG 零图表库）：4 KPI 卡（本周咨询数/时长/平均时长带周环比 ↑绿↓红◆灰 + 累计记录数带分组副文案）+ 统计窗口标注、2×2 图表（SVG donut 状态分布/标签词云 12~28px 映射/近14天趋势折线面积图/近7天迷你条形）、待办三卡（待补摘要/待补标签/失败待处理，点击回记录看板）。验收：82 pytest + ruff + build 全过；真浏览器实测 7/7 全过零 JS 异常（含 KPI 与 API 对账一致、深色主题、375px 不破版）。
+- **T-S1.15 工作台统计 API** ✅（merge 30f555a）：FB-013 后端卡。`GET /dashboard/summary` 单端点聚合：周 KPI（sessions/hours/avg_minutes + 上周环比）/totals/状态分布（done/processing/failed 定序）/标签词云 Top20/近14天逐日趋势补 0/待办三项（no_brief/no_tags 只计 done）。验收：82 pytest（+4）+ ruff 全过；真 API 实测口径全对。Reasonix 再次踩「/api 前缀」路由坑，大统领修复（581344c）——后续派单卡需显式警告此前缀陷阱。
+
 ### 已完成（S1 增补·二）
 - **T-S1.14 看板交互六项重构（前端）** ✅（merge 0a2e6b4）：FB-012 前端卡。App.vue 重写为编排器 + 拆 6 组件（BoardSidebar/CalendarMini/UploadPanel/DetailPanel/TranscriptBubbles/TranscriptTable）+ 2 utils。六项全落地：①分组区置顶（列表与工具条之上）；②组删除双模式弹层（仅解散组 / 红色危险「删除组和包含的记录」+条数+不可撤销提示）；③批量操作（选择模式开关/全选/已选 N 条/批量删除确认弹层/导出 `mengpsy-records-YYYYMMDD.json`）；④日历月视图（42 格/前后月占位/圆点条数/上下月/今天/点击过滤+清除）；⑤右侧双 Tab（①上传/转写区 ②记录详情区），点看板记录与上传 done 自动切详情，详情含全字段+气泡；⑥转写双视图（气泡只读/表格逐行编辑+保存+保存全部改动）。验收：78 pytest + ruff + build 全过；真浏览器沙箱实测 12/12 全过零 JS 异常（含批量删除/组联删真删落库、表格编辑落库、导出文件名捕获、上传 done 自动切详情）；线上 5199 冒烟全过（双 Tab/分组置顶/日历 5 天有数据/选择模式全选/详情自动切换/导出 API）。
 - **T-S1.13 看板 API 扩展** ✅（merge 756b0df）：FB-012 后端卡。`_hard_delete_session` 抽出复用；`DELETE /groups/{id}?mode=dissolve|with_records` 双模式（非法 mode 422）；`POST /sessions/bulk-delete`（空表 422、不存在进 missing）；`GET /export/sessions` 全量导出；`PATCH /sessions/{id}/segments/{seq}` 段落编辑（cleaned_content 改、content 原文不动、重建 cleaned_text，空白 422/不存在 404）。验收：78 pytest（+10 新增）+ ruff + import 全过；真 API 沙箱实测 11/11 全过（含音频文件级联删除验证）。大统领验收抓出并修复路由前缀 bug（`/api/export/sessions`→`/export/sessions`，vite 代理剥 /api 会 404，commit 6382bd7）。
