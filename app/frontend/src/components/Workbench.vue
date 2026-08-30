@@ -205,9 +205,9 @@ const barScale = computed(() => {
 
 // ── 待办 ────────────────────────────────────────────────
 const todoCards = computed(() => [
-  { key: 'no_brief', icon: '📝', title: '待补摘要', desc: '记录缺少一句话摘要', count: todos.value.no_brief },
-  { key: 'no_tags', icon: '🏷️', title: '待补标签', desc: '记录缺少议题标签', count: todos.value.no_tags },
-  { key: 'failed', icon: '⚠️', title: '失败待处理', desc: '处理失败需重试/检查', count: todos.value.failed },
+  { key: 'no_brief', title: '待补摘要', desc: '记录缺少一句话摘要', count: todos.value.no_brief },
+  { key: 'no_tags', title: '待补标签', desc: '记录缺少议题标签', count: todos.value.no_tags },
+  { key: 'failed', title: '失败待处理', desc: '处理失败需重试/检查', count: todos.value.failed },
 ])
 
 function safeCount(v) {
@@ -222,7 +222,12 @@ function safeCount(v) {
       <div class="kpi-grid">
         <div class="kpi-card">
           <div class="kpi-top">
-            <span class="kpi-icon">📅</span>
+            <svg class="kpi-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="3" y="5" width="18" height="16" rx="2" />
+              <line x1="3" y1="10" x2="21" y2="10" />
+              <line x1="8" y1="3" x2="8" y2="7" />
+              <line x1="16" y1="3" x2="16" y2="7" />
+            </svg>
             <span class="kpi-window">本周</span>
           </div>
           <div class="kpi-num">{{ Number(week.sessions) || 0 }}</div>
@@ -235,7 +240,12 @@ function safeCount(v) {
 
         <div class="kpi-card">
           <div class="kpi-top">
-            <span class="kpi-icon">⏱️</span>
+            <svg class="kpi-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="12" cy="13" r="8" />
+              <line x1="12" y1="9" x2="12" y2="13" />
+              <line x1="12" y1="13" x2="15" y2="15" />
+              <line x1="9" y1="2" x2="15" y2="2" />
+            </svg>
             <span class="kpi-unit">小时</span>
           </div>
           <div class="kpi-num">{{ fmtHours(week.hours) }}</div>
@@ -248,7 +258,11 @@ function safeCount(v) {
 
         <div class="kpi-card">
           <div class="kpi-top">
-            <span class="kpi-icon">🎯</span>
+            <svg class="kpi-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="9" />
+              <circle cx="12" cy="12" r="5" />
+              <circle cx="12" cy="12" r="1.2" fill="currentColor" stroke="none" />
+            </svg>
             <span class="kpi-unit">分钟</span>
           </div>
           <div class="kpi-num">{{ Number(week.avg_minutes) || 0 }}</div>
@@ -261,7 +275,9 @@ function safeCount(v) {
 
         <div class="kpi-card">
           <div class="kpi-top">
-            <span class="kpi-icon">🗂️</span>
+            <svg class="kpi-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M3 7a2 2 0 0 1 2-2h4l2 3h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+            </svg>
             <span class="kpi-window">累计</span>
           </div>
           <div class="kpi-num">{{ Number(totals.sessions) || 0 }}</div>
@@ -315,7 +331,9 @@ function safeCount(v) {
         <div class="chart-card">
           <h3 class="chart-title">议题标签</h3>
           <div v-if="!cloudItems.length" class="chart-empty">
-            <span class="chart-empty-icon">☁</span>
+            <svg class="chart-empty-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M7 18h10a4 4 0 0 0 0-8 5.5 5.5 0 0 0-10.7 1.1A3.5 3.5 0 0 0 7 18z" />
+            </svg>
             <span class="chart-empty-text">暂无数据</span>
           </div>
           <div v-else class="cloud">
@@ -417,7 +435,11 @@ function safeCount(v) {
           class="todo-card"
           @click="emit('goto-todo', card.key)"
         >
-          <span class="todo-icon">{{ card.icon }}</span>
+          <span class="todo-icon" aria-hidden="true">
+            <template v-if="card.key === 'no_brief'">⋯</template>
+            <template v-else-if="card.key === 'no_tags'">#</template>
+            <template v-else>!</template>
+          </span>
           <span class="todo-text">
             <span class="todo-title">{{ card.title }}</span>
             <span class="todo-desc">{{ card.desc }}</span>
@@ -482,7 +504,10 @@ function safeCount(v) {
 }
 
 .kpi-icon {
-  font-size: 1.25rem;
+  width: 22px;
+  height: 22px;
+  color: var(--primary-dark);
+  flex: 0 0 auto;
 }
 
 .kpi-window,
@@ -575,6 +600,12 @@ function safeCount(v) {
 .chart-empty-icon {
   font-size: 1.8rem;
   line-height: 1;
+  opacity: 0.35;
+}
+
+.chart-empty-svg {
+  width: 28px;
+  height: 28px;
   opacity: 0.35;
 }
 
@@ -813,7 +844,17 @@ function safeCount(v) {
 }
 
 .todo-icon {
-  font-size: 1.4rem;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--primary-dark);
+  border: 1.5px solid var(--primary-hover-border);
+  border-radius: 6px;
 }
 
 .todo-text {
