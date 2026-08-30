@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, Request, UploadFile
@@ -340,6 +340,127 @@ def list_sessions(request: Request):
                 ]
             }
         )
+    finally:
+        db.close()
+
+
+# ── T-S1.15 工作台统计 ──────────────────────────────────────────
+
+
+def _week_start(dt: datetime) -> datetime:
+    """本周一 00:00（本地服务器时间，与 datetime.now 口径一致）。"""
+    return (dt - timedelta(days=dt.weekday())).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+
+
+def _dashboard_summary_data(db, user_id: int) -> dict:
+    """聚合工作台 KPI + 数据看板（单用户全量内存聚合，S0 数据量足够）。"""
+    now = datetime.now()
+    week_start = _week_start(now)
+    prev_week_start = week_start - timedelta(days=7)
+
+    sessions = db.query(Session).filter(Session.user_id == user_id).all()
+    groups_count = (
+        db.query(SessionGroup).filter(SessionGroup.user_id == user_id).count()
+    )
+
+    def _count_week(start: datetime) -> tuple[int, int]:
+        """返回 (窗口内会话数, 窗口内总时长秒数)，窗口 = [start, start+7天)。"""
+        end = start + timedelta(days=7)
+        total_sec = 0
+        count = 0
+        for s in sessions:
+            if s.started_at is not None and start <= s.started_at < end:
+                count += 1
+                total_sec += s.duration_sec or 0
+        return count, total_sec
+
+    week_count, week_sec = _count_week(week_start)
+    prev_count, prev_sec = _count_week(prev_week_start)
+
+    # status_dist：processing = 所有非 done/failed 中间态之和；顺序固定。
+    done_count = sum(1 for s in sessions if s.status == SessionStatus.DONE)
+    failed_count = sum(1 for s in sessions if s.status == SessionStatus.FAILED)
+    processing_count = len(sessions) - done_count - failed_count
+
+    # tag_cloud：tags 数组展开词频，降序 Top 20（同频按标签名升序保证稳定）。
+    tag_counter: dict[str, int] = {}
+    for s in sessions:
+        for tag in s.tags or []:
+            if isinstance(tag, str) and tag:
+                tag_counter[tag] = tag_counter.get(tag, 0) + 1
+    tag_cloud = [
+        {"tag": tag, "count": count}
+        for tag, count in sorted(
+            tag_counter.items(), key=lambda item: (-item[1], item[0])
+        )[:20]
+    ]
+
+    # trend：近 14 天（含今天）逐日聚合，无记录日期补 0，日期升序。
+    today = now.date()
+    days = [today - timedelta(days=offset) for offset in range(13, -1, -1)]
+    day_set = set(days)
+    trend_map: dict[date, list[int]] = {d: [0, 0] for d in days}
+    for s in sessions:
+        if s.started_at is not None:
+            d = s.started_at.date()
+            if d in day_set:
+                trend_map[d][0] += s.duration_sec or 0
+                trend_map[d][1] += 1
+
+    # todos：no_brief / no_tags 只统计 done；failed 单独计。
+    no_brief = sum(
+        1
+        for s in sessions
+        if s.status == SessionStatus.DONE and not (s.brief or "").strip()
+    )
+    no_tags = sum(
+        1
+        for s in sessions
+        if s.status == SessionStatus.DONE and not (s.tags or [])
+    )
+
+    return {
+        "week": {
+            "start": week_start.date().isoformat(),
+            "end": (week_start + timedelta(days=6)).date().isoformat(),
+            "sessions": week_count,
+            "sessions_prev": prev_count,
+            "hours": round(week_sec / 3600, 1) if week_count else 0,
+            "hours_prev": round(prev_sec / 3600, 1) if prev_count else 0,
+            "avg_minutes": round(week_sec / 60 / week_count, 1) if week_count else 0,
+            "avg_minutes_prev": round(prev_sec / 60 / prev_count, 1) if prev_count else 0,
+        },
+        "totals": {"sessions": len(sessions), "groups": groups_count},
+        "status_dist": [
+            {"status": "done", "label": "完成", "count": done_count},
+            {"status": "processing", "label": "处理中", "count": processing_count},
+            {"status": "failed", "label": "失败", "count": failed_count},
+        ],
+        "tag_cloud": tag_cloud,
+        "trend": [
+            {
+                "date": d.isoformat(),
+                "minutes": round(trend_map[d][0] / 60, 1),
+                "sessions": trend_map[d][1],
+            }
+            for d in days
+        ],
+        "todos": {
+            "no_brief": no_brief,
+            "no_tags": no_tags,
+            "failed": failed_count,
+        },
+    }
+
+
+@router.get("/dashboard/summary")
+def dashboard_summary(request: Request):
+    """T-S1.15：工作台单端点聚合（KPI + 状态分布 + 词云 + 趋势 + 待办）。"""
+    db = _open_db(request)
+    try:
+        return ok(_dashboard_summary_data(db, _get_dev_user_id(request)))
     finally:
         db.close()
 
