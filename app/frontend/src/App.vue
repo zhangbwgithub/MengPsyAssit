@@ -3,6 +3,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import BoardSidebar from './components/BoardSidebar.vue'
 import UploadPanel from './components/UploadPanel.vue'
 import DetailPanel from './components/DetailPanel.vue'
+import Workbench from './components/Workbench.vue'
 
 // 支持的音频扩展名（与后端校验保持一致）
 const ALLOWED_EXTS = ['.wav', '.m4a', '.mp3', '.opus', '.flac']
@@ -84,6 +85,40 @@ const groupsLoading = ref(false)
 
 // T-S1.14：右侧功能区 Tab（upload | detail）
 const activeTab = ref('upload')
+
+// T-S1.16：顶层「记录看板 / 工作台」切换（纯前端状态）
+const appView = ref('board')
+const workbenchSummary = ref(null)
+const workbenchError = ref('')
+
+function gotoBoard() {
+  appView.value = 'board'
+}
+
+function gotoWorkbench() {
+  appView.value = 'workbench'
+  if (!workbenchSummary.value && !workbenchError.value) loadWorkbenchSummary()
+}
+
+// T-S1.16：待办下钻 → 简单切回记录看板即可（不做精确筛选联动）
+function gotoTodo() {
+  appView.value = 'board'
+}
+
+async function loadWorkbenchSummary() {
+  // 懒加载：仅进入工作台时请求，看板功能零回归
+  workbenchError.value = ''
+  try {
+    const res = await fetch('/api/dashboard/summary')
+    const json = await res.json()
+    if (!json.ok) {
+      throw new Error(json.error?.message || '加载工作台数据失败')
+    }
+    workbenchSummary.value = json.data
+  } catch (err) {
+    workbenchError.value = err.message || '加载工作台数据失败'
+  }
+}
 
 const acceptedTypes = ALLOWED_EXTS.join(',')
 
@@ -740,6 +775,24 @@ onUnmounted(() => {
     <header class="header">
       <h1>咨询记录助手</h1>
       <p class="subtitle">录音 → 转写 → 清理 → 客观记录</p>
+      <nav class="view-nav" role="tablist" aria-label="页面切换">
+        <button
+          type="button"
+          class="view-tab"
+          :class="{ active: appView === 'board' }"
+          @click="gotoBoard"
+        >
+          记录看板
+        </button>
+        <button
+          type="button"
+          class="view-tab"
+          :class="{ active: appView === 'workbench' }"
+          @click="gotoWorkbench"
+        >
+          工作台
+        </button>
+      </nav>
       <div class="theme-ctl" role="group" aria-label="主题切换">
         <label
           v-for="opt in ['light', 'auto', 'dark']"
@@ -759,7 +812,7 @@ onUnmounted(() => {
       </div>
     </header>
 
-    <main class="container dashboard">
+    <main v-show="appView === 'board'" class="container dashboard">
       <!-- 左侧看板 -->
       <BoardSidebar
         :sessions="sessions"
@@ -831,6 +884,23 @@ onUnmounted(() => {
           @save-segment="patchSegment"
         />
       </div>
+    </main>
+
+    <!-- T-S1.16：工作台页 -->
+    <main v-show="appView === 'workbench'" class="container">
+      <div v-if="workbenchError" class="error-box">
+        <p>{{ workbenchError }}</p>
+        <button class="btn small primary" type="button" @click="loadWorkbenchSummary">重试</button>
+      </div>
+      <div v-else-if="!workbenchSummary" class="wb-loading" role="status">
+        <span class="wb-loading-text">加载中…</span>
+      </div>
+      <Workbench
+        v-else
+        :summary="workbenchSummary"
+        :groups="groups"
+        @goto-todo="gotoTodo"
+      />
     </main>
 
     <!-- 分组新建/编辑弹层 -->
@@ -1002,6 +1072,39 @@ body {
 
 .subtitle {
   margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.view-nav {
+  display: inline-flex;
+  gap: 4px;
+  margin-top: 12px;
+  padding: 3px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: var(--surface);
+}
+
+.view-tab {
+  padding: 6px 18px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.view-tab.active {
+  background: var(--primary);
+  color: var(--on-primary);
+  font-weight: 600;
+}
+
+.wb-loading {
+  padding: 48px 0;
+  text-align: center;
   color: var(--muted);
   font-size: 0.95rem;
 }
@@ -1248,6 +1351,11 @@ body {
 @media (max-width: 480px) {
   .header h1 {
     font-size: 1.45rem;
+  }
+
+  .view-tab {
+    padding: 5px 12px;
+    font-size: 0.82rem;
   }
 
   .panel-tab {
