@@ -11,6 +11,9 @@ import {
 const props = defineProps({
   sessions: { type: Array, default: () => [] },
   groups: { type: Array, default: () => [] },
+  clients: { type: Array, default: () => [] },
+  clientsLoading: { type: Boolean, default: false },
+  activeClientFilter: { type: [Number, String], default: null },
   boardLoading: { type: Boolean, default: false },
   groupsLoading: { type: Boolean, default: false },
   boardError: { type: String, default: '' },
@@ -21,9 +24,13 @@ const emit = defineEmits([
   'select',
   'refresh',
   'move-session',
+  'assign-client',
+  'filter-client',
   'delete-session',
   'edit-group',
   'delete-group',
+  'edit-client',
+  'delete-client',
   'bulk-delete',
   'export',
 ])
@@ -61,6 +68,9 @@ const filteredSessions = computed(() => {
   }
   if (dateFilter.value) {
     rows = rows.filter((s) => localDateKey(s.started_at) === dateFilter.value)
+  }
+  if (props.activeClientFilter != null) {
+    rows = rows.filter((s) => String(s.client_id ?? '') === String(props.activeClientFilter))
   }
   return rows
 })
@@ -243,6 +253,32 @@ const groupOptions = computed(() => [
   ...sortedGroups.value.map((g) => ({ value: g.group_id, label: g.name })),
 ])
 
+// ── T-S1.18：来访者名单（active 优先已由 API 排序保证）──────
+const sortedClients = computed(() => props.clients)
+
+const clientOptions = computed(() => [
+  { value: '', label: '未关联' },
+  ...sortedClients.value.map((c) => ({ value: String(c.client_id), label: c.name })),
+])
+
+function clientStatusText(c) {
+  return c.status === 'disabled' ? '已结束' : '进行中'
+}
+
+function clientStatusClass(c) {
+  return c.status === 'disabled' ? 'ended' : 'ongoing'
+}
+
+function clientNameOf(cid) {
+  if (cid == null) return ''
+  const c = props.clients.find((x) => x.client_id === Number(cid))
+  return c?.name || ''
+}
+
+function isActiveClientFilter(cid) {
+  return props.activeClientFilter != null && Number(props.activeClientFilter) === Number(cid)
+}
+
 // ── 分组成员展开 ───────────────────────────────────────────
 const expandedMembers = ref({})
 function expandMembers(g) {
@@ -308,6 +344,42 @@ function checkboxClick(event) {
     </div>
 
     <div v-if="boardError" class="board-error">{{ boardError }}</div>
+
+    <!-- T-S1.18：来访者区（名单点击过滤记录） -->
+    <div class="panel-section client-panel">
+      <div class="panel-head">
+        <h3>来访</h3>
+        <button class="btn small secondary" type="button" @click="emit('edit-client', undefined)">
+          新增来访
+        </button>
+      </div>
+      <p v-if="clientsLoading" class="board-empty">来访者加载中…</p>
+      <ul v-else-if="sortedClients.length" class="client-list">
+        <li
+          v-for="c in sortedClients"
+          :key="c.client_id"
+          class="client-item"
+          :class="{ 'filter-active': isActiveClientFilter(c.client_id) }"
+        >
+          <button class="client-main" type="button" @click="emit('filter-client', c.client_id)">
+            <span class="client-name" :title="c.name">{{ truncate(c.name, 14) }}</span>
+            <span class="client-badge" :class="clientStatusClass(c)">
+              {{ clientStatusText(c) }}
+            </span>
+            <span class="client-count">{{ c.session_count }} 节</span>
+          </button>
+          <span class="client-actions">
+            <button class="btn small client-action" type="button" @click="emit('edit-client', c)">
+              编辑
+            </button>
+            <button class="btn small client-del" type="button" @click="emit('delete-client', c)">
+              删除
+            </button>
+          </span>
+        </li>
+      </ul>
+      <p v-else class="board-empty">暂无来访者</p>
+    </div>
 
     <!-- 分组管理区（移上看板顶部） -->
     <div class="group-panel">
@@ -442,6 +514,27 @@ function checkboxClick(event) {
       </label>
     </div>
 
+    <div v-if="sortedClients.length" class="board-filter">
+      <label class="board-sort">
+        来访筛选
+        <select
+          :value="activeClientFilter != null ? String(activeClientFilter) : ''"
+          @change="emit('filter-client', $event.target.value === '' ? null : $event.target.value)"
+        >
+          <option value="">全部</option>
+          <option v-for="c in sortedClients" :key="c.client_id" :value="String(c.client_id)">
+            {{ c.name }}（{{ c.session_count }} 节）
+          </option>
+        </select>
+      </label>
+    </div>
+
+    <!-- 来访筛选提示条（清除方式与日期过滤一致） -->
+    <div v-if="activeClientFilter != null" class="date-filter-bar">
+      <span>来访者</span><span> · </span><span>{{ clientNameOf(activeClientFilter) }}</span>
+      <button class="date-clear" type="button" @click="emit('filter-client', null)">清除</button>
+    </div>
+
     <div v-if="sessions.length === 0 && !boardLoading" class="board-empty">暂无记录</div>
 
     <ul v-else-if="displayTree.length" class="board-list">
@@ -536,23 +629,42 @@ function checkboxClick(event) {
             <span v-if="node.session.group_name" class="board-badge muted group">
               {{ node.session.group_name }}
             </span>
+            <span
+              v-if="node.session.client_name"
+              class="board-badge muted client"
+              :title="'来访者：' + node.session.client_name"
+            >
+              {{ truncate(node.session.client_name, 8) }}
+            </span>
             <span class="board-time">{{ formatStartedAt(node.session.started_at) }}</span>
           </div>
           <div class="board-meta">
             <span class="board-filename" :title="node.session.original_filename">
               {{ truncate(node.session.original_filename || '—', 22) }}
             </span>
-            <span class="board-detail">⏱ {{ durationMMSS(node.session.duration_sec) }}</span>
+            <span class="board-detail">{{ durationMMSS(node.session.duration_sec) }}</span>
             <span class="board-detail">字 {{ node.session.word_count ?? 0 }}</span>
             <span class="board-move-row">
               <select
                 class="board-group-select"
+                title="归属分组"
                 :value="String(node.session.group_id || '')"
                 @change="emit('move-session', node.session, $event.target.value)"
                 @click.stop
               >
                 <option v-for="g in groupOptions" :key="g.value" :value="g.value">
                   {{ g.label }}
+                </option>
+              </select>
+              <select
+                class="board-group-select client-assign"
+                title="归属来访者"
+                :value="String(node.session.client_id || '')"
+                @change="emit('assign-client', node.session, $event.target.value)"
+                @click.stop
+              >
+                <option v-for="c in clientOptions" :key="c.value" :value="c.value">
+                  {{ c.label }}
                 </option>
               </select>
               <button
@@ -616,6 +728,131 @@ function checkboxClick(event) {
   border-radius: 8px;
   color: var(--danger);
   font-size: 0.8rem;
+}
+
+/* T-S1.18：来访者区 */
+.panel-section.client-panel {
+  margin-bottom: 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 10px;
+  background: var(--card-inset);
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.panel-head h3 {
+  margin: 0;
+  font-size: 0.92rem;
+  color: var(--text);
+}
+
+.client-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.client-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 6px 8px;
+  background: var(--card);
+}
+
+.client-item.filter-active {
+  border-color: var(--primary);
+  background: var(--hover);
+}
+
+.client-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: none;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text);
+}
+
+.client-name {
+  font-weight: 600;
+  font-size: 0.86rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.client-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+.client-badge.ongoing {
+  background: var(--ok-bg);
+  color: var(--ok-text);
+}
+
+.client-badge.ended {
+  background: var(--surface);
+  color: var(--muted);
+}
+
+.client-count {
+  margin-left: auto;
+  font-size: 0.75rem;
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+
+.client-actions {
+  display: inline-flex;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.client-action {
+  padding: 2px 7px;
+  font-size: 0.7rem;
+}
+
+.client-del {
+  padding: 2px 7px;
+  font-size: 0.7rem;
+  background: transparent;
+  color: var(--danger);
+  border: 1px solid var(--danger-border);
+}
+
+/* 记录行上的来访者姓名徽标 */
+.board-badge.client {
+  background: var(--surface);
+  color: var(--text);
+}
+
+.client-assign {
+  max-width: 96px;
 }
 
 /* 分组管理区（顶部） */

@@ -44,11 +44,17 @@ function setTheme(value) {
   applyTheme()
 }
 
+// 主题标签：不再使用 ☀/⏾ emoji 类字形，仅返回纯文本（图标由内联 SVG 承载）
 function themeLabel(value) {
   if (value === 'auto') {
-    return storedSystem.value === 'dark' ? '⏾自动（暗）' : '☀自动（亮）'
+    return storedSystem.value === 'dark' ? '自动（暗）' : '自动（亮）'
   }
-  return value === 'dark' ? '⏾暗色' : '☀亮色'
+  return value === 'dark' ? '暗色' : '亮色'
+}
+
+function themeIconType(value) {
+  if (value === 'auto') return storedSystem.value === 'dark' ? 'moon' : 'sun'
+  return value === 'dark' ? 'moon' : 'sun'
 }
 
 function themeChecked(value) {
@@ -73,6 +79,8 @@ const pollingInFlight = ref(false)
 const pollFailures = ref(0)
 // T-S1.6：上传可选管线模式；默认多模态直转（推荐）
 const selectedMode = ref('omni')
+// T-S1.18：上传时可先选「来访者」，成功挂上后自动 PATCH 新会话 client_id
+const uploadClientId = ref('')
 
 // T-S1.10：左侧上传/分析记录看板
 const sessions = ref([])
@@ -82,6 +90,11 @@ const activeSessionId = ref(null)
 
 const groups = ref([])
 const groupsLoading = ref(false)
+
+// T-S1.18：来访者档案（GET/POST /api/clients）
+const clients = ref([])
+const clientsLoading = ref(false)
+const activeClientFilter = ref(null) // 选中来访者 id（null=全部）
 
 // T-S1.14：右侧功能区 Tab（upload | detail）
 const activeTab = ref('upload')
@@ -232,6 +245,19 @@ async function upload() {
     activeSessionId.value = json.data.session_id
     sessionStatus.value = json.data.status
     loadSessions()
+    // T-S1.18：上传成功即把新会话挂到选中的来访者（一次性 PATCH）
+    if (uploadClientId.value !== '' && uploadClientId.value != null) {
+      try {
+        await fetch(`/api/sessions/${json.data.session_id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ client_id: Number(uploadClientId.value) }),
+        })
+        loadClients()
+      } catch {
+        // 挂接失败不阻断上传主流程，看板刷新后可见未关联状态
+      }
+    }
     startPolling()
   } catch (err) {
     if (err.name === 'AbortError') {
@@ -458,6 +484,28 @@ async function moveSession(s, groupId) {
   } catch (err) {
     boardError.value = err.message || '移动失败'
   }
+}
+
+// T-S1.18：把记录挂接/解挂来访者（PATCH /sessions/{id} 的 client_id）
+async function assignSessionClient(s, clientId) {
+  boardError.value = ''
+  try {
+    const payload = clientId === '' || clientId == null ? { client_id: null } : { client_id: Number(clientId) }
+    await patchSession(s, payload)
+    if (sessionData.value?.session_id === s.session_id) {
+      sessionData.value = { ...sessionData.value, ...payload, client_name: clientNameOf(payload.client_id) }
+    }
+    loadClients()
+  } catch (err) {
+    boardError.value = err.message || '更新来访者失败'
+  }
+}
+
+// 依 client_id 取当前档案（供记录条目/详情显示姓名）
+function clientNameOf(cid) {
+  if (cid == null) return ''
+  const c = clients.value.find((x) => x.client_id === Number(cid))
+  return c?.name || ''
 }
 
 async function deleteSession(s) {
@@ -721,6 +769,164 @@ async function submitGroup() {
   }
 }
 
+// ── T-S1.18：来访者建档/编辑弹层与删除确认 ────────────────
+const clientEditOpen = ref(false)
+const clientEditMode = ref('create') // create | edit
+const clientEditId = ref(null)
+const clientForm = ref(emptyClientForm())
+const clientEditError = ref('')
+const clientEditBusy = ref(false)
+
+function emptyClientForm() {
+  return {
+    name: '',
+    gender: '女',
+    age: '',
+    phone: '',
+    emergency_contact: '',
+    emergency_phone: '',
+    start_date: '',
+    status: 'active',
+    note: '',
+  }
+}
+
+function openClientEdit(client) {
+  clientEditOpen.value = true
+  clientEditError.value = ''
+  clientEditId.value = client ? client.client_id : null
+  clientEditMode.value = client ? 'edit' : 'create'
+  if (client) {
+    clientForm.value = {
+      name: client.name || '',
+      gender: client.gender || '女',
+      age: client.age != null ? String(client.age) : '',
+      phone: client.phone || '',
+      emergency_contact: client.emergency_contact || '',
+      emergency_phone: client.emergency_phone || '',
+      start_date: client.start_date || '',
+      status: client.status || 'active',
+      note: client.note || '',
+    }
+  } else {
+    clientForm.value = emptyClientForm()
+  }
+}
+
+function closeClientEdit() {
+  if (clientEditBusy.value) return
+  clientEditOpen.value = false
+}
+
+// 提交前清理：空串字段序列化为 null，与后端“显式传入字段”口径一致
+function clientPayload() {
+  const f = clientForm.value
+  const numOrNull = (v) => (v === '' || v == null ? null : Number(v))
+  return {
+    name: f.name.trim(),
+    gender: f.gender || null,
+    age: numOrNull(f.age),
+    phone: (f.phone || '').trim() || null,
+    emergency_contact: (f.emergency_contact || '').trim() || null,
+    emergency_phone: (f.emergency_phone || '').trim() || null,
+    start_date: (f.start_date || '').trim() || null,
+    status: f.status || 'active',
+    note: (f.note || '').trim() || null,
+  }
+}
+
+async function submitClient() {
+  const name = (clientForm.value.name || '').trim()
+  if (!name) {
+    clientEditError.value = '姓名不能为空'
+    return
+  }
+  const age = clientForm.value.age.trim()
+  if (age !== '' && !/^\d+$/.test(age)) {
+    clientEditError.value = '年龄须为非负整数'
+    return
+  }
+  clientEditBusy.value = true
+  clientEditError.value = ''
+  try {
+    let res
+    if (clientEditMode.value === 'edit') {
+      res = await fetch(`/api/clients/${clientEditId.value}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(clientPayload()),
+      })
+    } else {
+      res = await fetch('/api/clients', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(clientPayload()),
+      })
+    }
+    const json = await res.json()
+    if (!json.ok) throw new Error(json.error?.message || '保存来访者失败')
+    clientEditOpen.value = false
+    loadClients()
+    loadSessions()
+  } catch (err) {
+    clientEditError.value = err.message || '保存来访者失败'
+  } finally {
+    clientEditBusy.value = false
+  }
+}
+
+const clientDeleteTarget = ref(null)
+const clientDeleteError = ref('')
+const clientDeleteBusy = ref(false)
+
+function openClientDelete(c) {
+  clientDeleteTarget.value = c
+  clientDeleteError.value = ''
+  clientDeleteBusy.value = false
+}
+
+function closeClientDelete() {
+  if (clientDeleteBusy.value) return
+  clientDeleteTarget.value = null
+}
+
+async function runClientDelete() {
+  const c = clientDeleteTarget.value
+  if (!c) return
+  clientDeleteBusy.value = true
+  clientDeleteError.value = ''
+  try {
+    const res = await fetch(`/api/clients/${c.client_id}`, { method: 'DELETE' })
+    const json = await res.json()
+    if (!json.ok) throw new Error(json.error?.message || '删除来访者失败')
+    clientDeleteTarget.value = null
+    if (activeClientFilter.value === c.client_id) activeClientFilter.value = null
+    loadClients()
+    loadSessions()
+    if (sessionData.value?.client_id === c.client_id) {
+      sessionData.value = { ...sessionData.value, client_id: null, client_name: null }
+    }
+  } catch (err) {
+    clientDeleteError.value = err.message || '删除来访者失败'
+  } finally {
+    clientDeleteBusy.value = false
+  }
+}
+
+async function loadClients() {
+  clientsLoading.value = true
+  try {
+    const res = await fetch('/api/clients')
+    const json = await res.json()
+    if (!json.ok) throw new Error(json.error?.message || '加载来访者失败')
+    clients.value = json.data?.clients || []
+  } catch (err) {
+    boardError.value = err.message || '加载来访者失败'
+  } finally {
+    clientsLoading.value = false
+  }
+}
+
 async function loadSessions() {
   boardLoading.value = true
   boardError.value = ''
@@ -758,6 +964,7 @@ let _sys = null
 onMounted(() => {
   loadSessions()
   loadGroups()
+  loadClients()
   _mq = matchMedia('(prefers-color-scheme: dark)')
   _sys = () => {
     if (!theme.value) applyTheme()
@@ -807,6 +1014,39 @@ onUnmounted(() => {
             :checked="themeChecked(opt)"
             @change="setTheme(opt)"
           />
+          <svg
+            v-if="themeIconType(opt) === 'sun'"
+            class="theme-icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            aria-hidden="true"
+          >
+            <circle cx="12" cy="12" r="4" />
+            <line x1="12" y1="2" x2="12" y2="5" />
+            <line x1="12" y1="19" x2="12" y2="22" />
+            <line x1="4.9" y1="4.9" x2="7" y2="7" />
+            <line x1="17" y1="17" x2="19.1" y2="19.1" />
+            <line x1="2" y1="12" x2="5" y2="12" />
+            <line x1="19" y1="12" x2="22" y2="12" />
+            <line x1="4.9" y1="19.1" x2="7" y2="17" />
+            <line x1="17" y1="7" x2="19.1" y2="4.9" />
+          </svg>
+          <svg
+            v-else
+            class="theme-icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z" />
+          </svg>
           {{ themeLabel(opt) }}
         </label>
       </div>
@@ -817,16 +1057,23 @@ onUnmounted(() => {
       <BoardSidebar
         :sessions="sessions"
         :groups="groups"
+        :clients="clients"
+        :clients-loading="clientsLoading"
+        :active-client-filter="activeClientFilter"
         :board-loading="boardLoading"
         :groups-loading="groupsLoading"
         :board-error="boardError"
         :active-session-id="activeSessionId"
-        @refresh="() => { loadSessions(); loadGroups() }"
+        @refresh="() => { loadSessions(); loadGroups(); loadClients() }"
         @select="selectSession"
         @move-session="moveSession"
+        @assign-client="assignSessionClient"
+        @filter-client="(id) => activeClientFilter = id"
         @delete-session="confirmDeleteSession"
         @edit-group="openGroupEdit"
         @delete-group="openGroupDelete"
+        @edit-client="openClientEdit"
+        @delete-client="openClientDelete"
         @bulk-delete="confirmBulkDelete"
         @export="exportSessions"
       />
@@ -855,6 +1102,8 @@ onUnmounted(() => {
         <UploadPanel
           v-show="activeTab === 'upload'"
           v-model:selected-mode="selectedMode"
+          v-model:client-id="uploadClientId"
+          :clients="clients"
           :uploading="uploading"
           :file-name="fileName"
           :accepted-types="acceptedTypes"
@@ -877,11 +1126,13 @@ onUnmounted(() => {
           v-show="activeTab === 'detail'"
           :session="detailSession"
           :group-name="detailGroupName"
+          :clients="clients"
           :is-dark="isDark"
           :show-timestamps="showTimestamps"
           @save-brief="saveBrief"
           @save-tags="saveTags"
           @save-segment="patchSegment"
+          @assign-client="(cid) => assignSessionClient(sessionData, cid)"
         />
       </div>
     </main>
@@ -902,6 +1153,103 @@ onUnmounted(() => {
         @goto-todo="gotoTodo"
       />
     </main>
+
+    <!-- T-S1.18：来访者建档/编辑弹层 -->
+    <div v-if="clientEditOpen" class="modal-mask" @click.self="closeClientEdit">
+      <div class="modal client-modal">
+        <h3>{{ clientEditMode === 'edit' ? '编辑来访者' : '新增来访者' }}</h3>
+        <div class="form-row">
+          <label class="modal-label">
+            姓名 <span class="required">*</span>
+            <input v-model="clientForm.name" type="text" placeholder="必填" />
+          </label>
+        </div>
+        <div class="form-row">
+          <span class="modal-label-inline-label">性别</span>
+          <label v-for="g in ['女', '男', '其他']" :key="g" class="radio-pill">
+            <input v-model="clientForm.gender" type="radio" :value="g" />
+            {{ g }}
+          </label>
+        </div>
+        <div class="form-row two-col">
+          <label class="modal-label">
+            年龄
+            <input v-model="clientForm.age" type="text" inputmode="numeric" placeholder="选填" />
+          </label>
+          <label class="modal-label">
+            电话
+            <input v-model="clientForm.phone" type="text" placeholder="选填" />
+          </label>
+        </div>
+        <div class="form-row two-col">
+          <label class="modal-label">
+            紧急联系人
+            <input v-model="clientForm.emergency_contact" type="text" placeholder="选填" />
+          </label>
+          <label class="modal-label">
+            紧急联系人电话
+            <input v-model="clientForm.emergency_phone" type="text" placeholder="选填" />
+          </label>
+        </div>
+        <div class="form-row two-col">
+          <label class="modal-label">
+            咨询开始时间
+            <input v-model="clientForm.start_date" type="date" />
+          </label>
+          <label class="modal-label">
+            状态
+            <select v-model="clientForm.status">
+              <option value="active">进行中</option>
+              <option value="disabled">已结束</option>
+            </select>
+          </label>
+        </div>
+        <div class="form-row">
+          <label class="modal-label">
+            备注
+            <textarea v-model="clientForm.note" rows="3" placeholder="选填"></textarea>
+          </label>
+        </div>
+        <div v-if="clientEditError" class="error-box"><p>{{ clientEditError }}</p></div>
+        <div class="edit-actions">
+          <button
+            class="btn small primary"
+            type="button"
+            :disabled="clientEditBusy"
+            @click="submitClient"
+          >
+            保存
+          </button>
+          <button class="btn small secondary" type="button" :disabled="clientEditBusy" @click="closeClientEdit">
+            取消
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- T-S1.18：来访者删除确认弹层 -->
+    <div v-if="clientDeleteTarget" class="modal-mask" @click.self="closeClientDelete">
+      <div class="modal">
+        <h3>删除来访者「{{ clientDeleteTarget.name }}」</h3>
+        <p class="confirm-msg">
+          名下 <strong>{{ clientDeleteTarget.session_count }}</strong> 条记录将保留并归为未关联。
+        </p>
+        <div v-if="clientDeleteError" class="error-box"><p>{{ clientDeleteError }}</p></div>
+        <div class="edit-actions">
+          <button
+            class="btn small danger"
+            type="button"
+            :disabled="clientDeleteBusy"
+            @click="runClientDelete"
+          >
+            确认删除
+          </button>
+          <button class="btn small secondary" type="button" :disabled="clientDeleteBusy" @click="closeClientDelete">
+            取消
+          </button>
+        </div>
+      </div>
+    </div>
 
     <!-- 分组新建/编辑弹层 -->
     <div v-if="groupEditOpen" class="modal-mask" @click.self="closeGroupEdit">
@@ -1140,6 +1488,12 @@ body {
   display: none;
 }
 
+.theme-icon {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+}
+
 .container {
   flex: 1;
   max-width: 1120px;
@@ -1267,6 +1621,58 @@ body {
   width: min(420px, 100%);
 }
 
+.client-modal {
+  width: min(480px, 100%);
+}
+
+.required {
+  color: var(--danger);
+}
+
+.modal-label-inline-label {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.radio-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  font-size: 0.85rem;
+  color: var(--text);
+  cursor: pointer;
+  background: var(--surface);
+}
+
+.radio-pill input[type='radio'] {
+  accent-color: var(--primary);
+}
+
+.form-row.two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.modal-label textarea,
+.modal-label select {
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--text);
+  font-size: 0.9rem;
+  font-family: inherit;
+}
+
+.modal-label textarea {
+  resize: vertical;
+  min-height: 64px;
+}
+
 .modal h3 {
   margin: 0 0 12px;
   font-size: 1.05rem;
@@ -1369,6 +1775,10 @@ body {
 
   .edit-actions .btn {
     width: auto;
+  }
+
+  .form-row.two-col {
+    grid-template-columns: 1fr;
   }
 }
 </style>

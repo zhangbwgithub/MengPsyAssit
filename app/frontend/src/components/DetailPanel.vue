@@ -11,11 +11,12 @@ import {
 const props = defineProps({
   session: { type: Object, default: null }, // 列表元数据 + 详情合并
   groupName: { type: String, default: '' },
+  clients: { type: Array, default: () => [] },
   isDark: { type: Boolean, default: false },
   showTimestamps: { type: Boolean, default: true },
 })
 
-const emit = defineEmits(['save-brief', 'save-tags', 'save-segment'])
+const emit = defineEmits(['save-brief', 'save-tags', 'save-segment', 'assign-client'])
 
 const viewMode = ref('bubble') // bubble | table
 const collapsedBlocks = ref({})
@@ -131,6 +132,16 @@ const metaInfoText = computed(() => {
   if (info.session_id) parts.push(`会话编号：#${info.session_id}`)
   return parts.join(' · ')
 })
+
+// ── T-S1.18：来访者（可点击切换下拉）────────────────────────
+const clientOptions = computed(() => [
+  { value: '', label: '未关联' },
+  ...props.clients.map((c) => ({ value: String(c.client_id), label: c.name })),
+])
+
+async function changeClient(event) {
+  await emit('assign-client', event.target.value)
+}
 </script>
 
 <template>
@@ -170,6 +181,20 @@ const metaInfoText = computed(() => {
         <div class="meta-item">
           <dt>所属组</dt>
           <dd>{{ groupName || '未分组' }}</dd>
+        </div>
+        <div class="meta-item">
+          <dt>来访者</dt>
+          <dd>
+            <select
+              class="client-select"
+              :value="String(session.client_id || '')"
+              @change="changeClient"
+            >
+              <option v-for="c in clientOptions" :key="c.value" :value="c.value">
+                {{ c.label }}
+              </option>
+            </select>
+          </dd>
         </div>
       </dl>
 
@@ -370,6 +395,17 @@ const metaInfoText = computed(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
   max-width: 260px;
+}
+
+.client-select {
+  background: var(--card);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 6px;
+  font-size: 0.85rem;
+  max-width: 180px;
+  cursor: pointer;
 }
 
 .result-meta-panel {

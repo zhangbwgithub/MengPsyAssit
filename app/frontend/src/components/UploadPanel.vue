@@ -3,6 +3,8 @@ import TranscriptBubbles from './TranscriptBubbles.vue'
 
 const props = defineProps({
   selectedMode: { type: String, default: 'omni' },
+  clientId: { type: [Number, String], default: '' },
+  clients: { type: Array, default: () => [] },
   uploading: { type: Boolean, default: false },
   fileName: { type: String, default: '' },
   acceptedTypes: { type: String, default: '' },
@@ -17,10 +19,21 @@ const props = defineProps({
   isDark: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['update:selectedMode', 'file-change', 'upload', 'reset', 'retry'])
+const emit = defineEmits([
+  'update:selectedMode',
+  'update:clientId',
+  'file-change',
+  'upload',
+  'reset',
+  'retry',
+])
 
 function onModeChange(event) {
   emit('update:selectedMode', event.target.value)
+}
+
+function onClientChange(event) {
+  emit('update:clientId', event.target.value)
 }
 </script>
 
@@ -73,6 +86,22 @@ function onModeChange(event) {
           />
           <span class="file-button">选择音频</span>
           <span class="file-name">{{ fileName || '未选择文件' }}</span>
+        </label>
+      </div>
+
+      <div v-if="clients.length" class="form-row">
+        <label class="client-pick">
+          <span class="client-pick-label">来访者</span>
+          <select
+            :value="String(clientId || '')"
+            :disabled="uploading"
+            @change="onClientChange"
+          >
+            <option value="">不选择</option>
+            <option v-for="c in clients" :key="c.client_id" :value="c.client_id">
+              {{ c.name }}
+            </option>
+          </select>
         </label>
       </div>
 
@@ -257,6 +286,27 @@ function onModeChange(event) {
   color: var(--muted);
   font-size: 0.9rem;
   word-break: break-all;
+}
+
+.client-pick {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.client-pick-label {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.client-pick select {
+  background: var(--card);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 0.9rem;
+  cursor: pointer;
 }
 
 .btn {
