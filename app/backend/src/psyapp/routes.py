@@ -455,7 +455,7 @@ def _dashboard_summary_data(db, user_id: int) -> dict:
     }
 
 
-@router.get("/api/dashboard/summary")
+@router.get("/dashboard/summary")
 def dashboard_summary(request: Request):
     """T-S1.15：工作台单端点聚合（KPI + 状态分布 + 词云 + 趋势 + 待办）。"""
     db = _open_db(request)

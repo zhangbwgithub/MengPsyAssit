@@ -54,7 +54,7 @@ def _monday(dt: datetime) -> datetime:
 
 
 def _summary(client) -> dict:
-    resp = client.get("/api/dashboard/summary")
+    resp = client.get("/dashboard/summary")
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["ok"] is True
